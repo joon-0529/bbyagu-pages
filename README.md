@@ -6,7 +6,8 @@ App Store Connect 심사에 필요한 두 URL을 제공하는 공개 저장소�
 | 페이지 | 용도 |
 |---|---|
 | `index.html` | 지원 URL |
-| `privacy.html` | 개인정보 처리방침 URL |
+| `privacy.html` · `privacy-en.html` | 개인정보 처리방침 URL (ko/en) |
+| `play/` | 브라우저 판 게임 — 본 저장소 `web/` 를 그대로 복사한 것. 여기서 고치지 말 것 |
 
 ## ⚠ 이 파일들을 여기서 직접 고치지 마세요
 
@@ -18,6 +19,7 @@ App Store Connect 심사에 필요한 두 URL을 제공하는 공개 저장소�
 ```bash
 python3 tools-gen-pages.py          # docs/ 갱신
 cp docs/*.html ~/Desktop/bbyagu-pages/   # 여기로 복사
+cp web/index.html web/*.js ~/Desktop/bbyagu-pages/play/   # 브라우저 판
 ```
 
 ## Pages 설정
