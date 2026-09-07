@@ -681,8 +681,9 @@ function draw(now) {
     ctx.fillStyle = ink(0.05); ctx.fillRect(br.x, br.y, br.w, br.h);
     ctx.strokeStyle = ink(0.3); ctx.lineWidth = 1.2;
     ctx.strokeRect(br.x, br.y, br.w, br.h);
-    if (textW('별별야구', mono(15, 700)) < br.w - 8)
-      text('별별야구', br.x + br.w / 2, br.y + br.h / 2 - 8, mono(15, 700), ink(0.45), 'center');
+    const board = online.adBoardRemote ?? '별별야구';
+    if (textW(board, mono(15, 700)) < br.w - 8)
+      text(board, br.x + br.w / 2, br.y + br.h / 2 - 8, mono(15, 700), ink(0.45), 'center');
   }
   ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.2;
   ctx.beginPath();

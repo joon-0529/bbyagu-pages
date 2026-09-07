@@ -73,7 +73,15 @@ export function makeOnline(L) {
     }, delay);
   }
 
+  // 서버가 내려주는 전광판 문구 — 후원사 교체를 업데이트 없이 (D74). 참여 끈 사용자에겐 요청 안 함
+  o.adBoardRemote = null;
+  o.fetchConfig = async () => {
+    const r = await request('/config', 'GET', null, { timeout: 8000, retries: 1 });
+    const t = typeof r?.adBoard === 'string' ? r.adBoard.slice(0, 12) : '';
+    o.adBoardRemote = t || null;
+  };
   o.ensureIdentity = async () => {
+    o.fetchConfig();
     if (!enabled()) {
       o.tried = true;
       o.refreshStatusLine();
@@ -194,7 +202,7 @@ export const TERMS_KO = [
   '삭제합니다. 명백한 욕설·사칭은 등록 단계에서 자동으로 걸러집니다.',
   '',
   '# 누구에게 넘기나요',
-  '아무에게도 넘기지 않습니다. 광고·분석 도구를 넣지 않았습니다.',
+  '아무에게도 넘기지 않습니다. 추적·분석 도구를 넣지 않았습니다.',
   '이름·이메일·주소·결제 정보를 받지 않습니다.',
   '',
   '# 어디에 저장되나요',
@@ -230,7 +238,7 @@ export const TERMS_EN = [
   'Obvious slurs and impersonations are filtered at registration.',
   '',
   '# Who we share it with',
-  'No one. There are no ads or analytics tools in this app.',
+  'No one. There are no tracking or analytics tools in this app.',
   'We never collect names, emails, addresses, or payment details.',
   '',
   '# Where it lives',
