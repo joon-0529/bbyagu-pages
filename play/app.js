@@ -38,6 +38,7 @@ const game = {
   fly: null,                // {at, dist, kind: 'fly'|'hr'|'ground'|'foul'}
   raceOffsets: [],
   raceEndedAt: 0, raceNewHigh: false,
+  cheerAt: 0,               // 플레이 중 축포 시각 — 홈런·득점 (D72)
   racePrevBestHR: 0, racePrevBestDist: 0,
   paused: false, pausedAt: 0,
   helpOpen: false, helpPaused: false,
@@ -262,8 +263,9 @@ function resolveRace(offset) {
   game.fly = (dist > 0 && out.result !== 'STRIKEOUT')
     ? { at: performance.now(), dist, kind: out.result === 'HOMERUN' ? 'hr' : 'fly' }
     : null;
+  if (out.result === 'HOMERUN') game.cheerAt = performance.now();
   game.phase = 'resolving';
-  game.resolveUntil = performance.now() + 1500;
+  game.resolveUntil = performance.now() + 1300;   // 맥과 동일 (1500 이었던 건 오기)
 }
 // 저장 **전**의 개인 최고를 돌려준다 — 신기록 판정 기준 (맥 saveRaceRecord)
 function saveRaceRecord(hr, dist) {
@@ -798,6 +800,8 @@ function draw(now) {
 
   // ── 타구 궤적 ──
   if (game.fly) drawFly(hudY, g, hitX, hitY, x_of, now);
+  // ── 플레이 중 축포 — 레이스 홈런·경기 내 득점 (D72) ──
+  if (game.cheerAt > 0 && game.phase !== 'ended') drawFireworks(20, now - game.cheerAt, true);
 
   // ── 종료 화면들 ──
   if (game.mode === 'race' && game.phase === 'ended') drawRaceOver(sum, now);
