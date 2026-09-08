@@ -857,7 +857,7 @@ function draw(now) {
   // ── 타구 궤적 ──
   if (game.fly) drawFly(hudY, g, hitX, hitY, x_of, now);
   // ── 플레이 중 축포 — 레이스 홈런·경기 내 득점 (D72) ──
-  if (game.cheerAt > 0 && game.phase !== 'ended') drawFireworks(20, now - game.cheerAt, true);
+  if (game.cheerAt > 0 && game.phase !== 'ended') drawFireworks(20, now - game.cheerAt, true, H);   // 관중석 위 하늘 (D86)
 
   // ── 종료 화면들 ──
   if (game.mode === 'race' && game.phase === 'ended') drawRaceOver(sum, now);
@@ -1284,11 +1284,36 @@ function drawHalfChangeCard(t) {
 }
 
 // 맥 drawFireworks 포팅 — 좌우 가장자리 방사선 폭죽 (승리 컬러 / 패배 흑백)
-function drawFireworks(hudY, t, color) {
+// skyH > 0 이면 플레이 중 축포(D86): 관중석 위 빈 하늘에 큰 것 하나 + 작은 것 여섯 (맥 동일)
+function drawFireworks(hudY, t, color, skyH = 0) {
   if (t < 0 || t >= 3500) return;
   const palette = ['rgba(255,59,48,', 'rgba(255,149,0,', 'rgba(255,204,0,',
                    'rgba(40,205,65,', 'rgba(255,45,85,', 'rgba(89,173,196,'];
   const grays = [0.60, 0.38, 0.72, 0.45, 0.55, 0.32];
+  if (skyH > 0) {
+    const x0 = W * 0.46, x1 = W * 0.90, y0 = hudY + 14, y1 = skyH * 0.52;
+    const bursts = [[0.50, 0.42, 58, 0], [0.18, 0.70, 20, 260], [0.82, 0.30, 22, 420],
+                    [0.30, 0.20, 18, 640], [0.72, 0.78, 24, 820], [0.08, 0.35, 16, 1050], [0.92, 0.62, 19, 1250]];
+    bursts.forEach(([px, py, rad, delay], b) => {
+      const bt = t - delay;
+      if (bt <= 0 || bt >= 1300) return;
+      const u = bt / 1300;
+      const fx = x0 + (x1 - x0) * px, fy = y0 + (y1 - y0) * py;
+      ctx.strokeStyle = palette[b % 6] + (1 - u) + ')';
+      ctx.lineWidth = b === 0 ? 2.2 : 1.5;
+      const r = easeOut(u) * rad, rays = b === 0 ? 16 : 10;
+      ctx.beginPath();
+      for (let i = 0; i < rays; i++) {
+        const ang = (i / rays) * Math.PI * 2 + b * 0.6;
+        const dx = Math.cos(ang), dy = Math.sin(ang);
+        ctx.moveTo(fx + dx * r * 0.5, fy + dy * r * 0.5);
+        ctx.lineTo(fx + dx * r, fy + dy * r);
+      }
+      ctx.stroke();
+      if (b === 0) { ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(fx, fy, r * 0.72, 0, 7); ctx.stroke(); }
+    });
+    return;
+  }
   for (let b = 0; b < 7; b++) {
     const bt = t - b * 340;
     if (bt <= 0 || bt >= 1100) continue;
