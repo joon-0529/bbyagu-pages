@@ -196,6 +196,30 @@ export function makeOnline(L) {
              + 'Copies in backups disappear within 30 days.') };
   };
 
+  // ── PvP 방 · 랜덤 매칭 (main.swift Online 의 PvP 부분) ──
+  o.createRoom = (innings, level, chaos) =>
+    request('/rooms', 'POST', { nickname: nickname(), settings: { innings, level, chaos } });
+  o.joinRoom = (code) => request(`/rooms/${code}/join`, 'POST', { nickname: nickname() });
+  // 전송이 실패하면 상대는 영원히 기다린다 — 턴제라 다음 기회가 없어 짧게 몇 번 재시도
+  o.sendRoomEvent = async (code, pid, type, data = {}) => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const r = await request(`/rooms/${code}/events`, 'POST', { playerId: pid, type, data });
+      if (r) return true;
+      await new Promise((res) => setTimeout(res, 500 * (attempt + 1)));
+    }
+    return false;
+  };
+  o.pollRoom = (code, pid, since) =>
+    request(`/rooms/${code}/events?playerId=${pid}&since=${since}`, 'GET', null, { timeout: 30_000 });
+  o.matchmake = () => (o.identityId ? request('/matchmake', 'POST', { identityId: o.identityId }) : Promise.resolve(null));
+  o.pollTicket = (tid) => request(`/matchmake/${tid}`, 'GET', null, { timeout: 30_000 });
+  o.cancelTicket = (tid) => request(`/matchmake/${tid}`, 'DELETE', null);
+  o.submitPvpResult = async (code, pid, my, opp) => {
+    const r = await request(`/rooms/${code}/result`, 'POST', { playerId: pid, my, opp });
+    if (!r || typeof r.w !== 'number') return '';
+    return L(`랭크 전적 ${r.w}승 ${r.l}패`, `Ranked record ${r.w}W ${r.l}L`);
+  };
+
   return o;
 }
 

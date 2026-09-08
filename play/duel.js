@@ -1,6 +1,6 @@
 // 경기 모드 (봇 대전) — main.swift 듀얼 로직 포팅 (H6 2단계)
 // 판정·비거리는 엔진(rules.js), 진행·봇·주자·스탯은 여기.
-// PvP 는 다음 단계 — 이 파일은 봇전만 안다.
+// PvP(pvp.js)는 이 파일의 훅(d.pvp · d.pvpSend · myBat)으로 붙는다 — 판정 코드는 하나.
 import { DIFFICULTY, judge, distanceOf } from './rules.js';
 
 export const DUEL_LEVELS = {
@@ -61,16 +61,34 @@ export function makeDuel(game, L, KOref) {
     d.paused = false;
     d.duelEndedAt = 0;
     d.halfChangeAt = 0; d.halfChangePending = false;
+    d.rematchMine = false; d.rematchOpp = false;
     d.onlineStatus = '';
     d.fly = null; d.judgeText = '';
     duelNextPitch(now);
   }
-  const myBat = () => d.halfTop;
+  // 이번 반이닝에 내가 타자인가 — 봇전은 초=나, PvP 는 초=호스트
+  const myBat = () => (d.pvp ? d.halfTop === d.isHost : d.halfTop);
   const myTotal = () => d.myInnRuns.reduce((a, b) => a + b, 0) + (myBat() ? d.curHalfRuns : 0);
   const botTotal = () => d.botInnRuns.reduce((a, b) => a + b, 0) + (!myBat() ? d.curHalfRuns : 0);
   const bump = (mine, f) => f(mine ? d.myStats : d.oppStats);
+  // 선공(초)·후공(말) 팀 총점 — 봇전은 내가 선공, PvP 는 호스트가 선공
+  const topTotal = () => (d.pvp && !d.isHost ? botTotal() : myTotal());
+  const bottomTotal = () => (d.pvp && !d.isHost ? myTotal() : botTotal());
 
   function duelNextPitch(now) {
+    if (d.pvp) {                            // 상대 이벤트 대기 — 타이머 없음
+      d.dp = null; d.botAct = null; d.swung = false;
+      d.phase = 'select'; d.selUntil = Infinity;
+      if (myBat()) {
+        d.awaitingPitchChoice = false;
+        d.judgeText = L(`${d.oppNick} 투수가 구종 선택 중…`, `${d.oppNick} is choosing a pitch…`);
+      } else {
+        d.awaitingPitchChoice = true;
+        d.judgeText = L('1 직구·스트  2 직구·볼  3 변화구·스트  4 변화구·볼',
+                        '1 fast·strike  2 fast·ball  3 break·strike  4 break·ball');
+      }
+      return;
+    }
     if (!d.halfTop) {                       // 내 수비 — 구종 선택 대기 (1~4)
       d.dp = null; d.botAct = null;
       d.awaitingPitchChoice = true;
@@ -133,6 +151,7 @@ export function makeDuel(game, L, KOref) {
       rv: revealPct / 100,
       noise: Math.round((Math.random() * 80 - 40)) / 10,
     };
+    if (d.pvp) d.pvpSend?.('pitch', { ...d.dp });   // 랜덤 요소까지 확정해 전송 — 양쪽이 같은 공
     d.judgeText = '';
     d.phase = 'ready';
     d.readyAt = performance.now() + dCfg().readyMs;
@@ -157,7 +176,9 @@ export function makeDuel(game, L, KOref) {
     if (d.phase !== 'pitching' || d.swung || d.mode !== 'duel' || d.paused) return;
     d.swung = true;
     d.swingAt = performance.now();
-    duelResolve(true, Math.round(eventTimeMs - d.hitAt));
+    const off = Math.round(eventTimeMs - d.hitAt);
+    if (d.pvp) d.pvpSend?.('result', { sw: true, off });
+    duelResolve(true, off);
   }
 
   function advanceBases(n) {
@@ -190,7 +211,7 @@ export function makeDuel(game, L, KOref) {
     d.curHalfRuns = 0;
     d.dBases = [false, false, false]; d.dB = 0; d.dS = 0; d.dOuts = 0;
     // 야구 규칙: 마지막 이닝 초 종료 시 후공이 이미 앞서면 말 공격 생략
-    if (d.halfTop && d.dInn >= d.dInnT && botTotal() > myTotal()) {
+    if (d.halfTop && d.dInn >= d.dInnT && bottomTotal() > topTotal()) {
       d.dOver = true; saveMatchResult(); return;
     }
     if (!d.halfTop) {
@@ -223,7 +244,7 @@ export function makeDuel(game, L, KOref) {
     let msg = '', kind = null, dist = 0;
     let endPA = false;
     const mine = myBat();
-    const who = L('봇', 'Bot');
+    const who = d.pvp ? d.oppNick : L('봇', 'Bot');
     const risp = d.dBases[1] || d.dBases[2];
     const batBefore = mine ? myTotal() : botTotal();
     const fldBefore = mine ? botTotal() : myTotal();
@@ -308,7 +329,7 @@ export function makeDuel(game, L, KOref) {
       bump(mine, (t) => { t.gwDesc = desc; });
     }
     // 야구 규칙: 마지막 이닝 말, 후공(봇)이 앞서는 순간 즉시 종료 (끝내기)
-    if (!d.dOver && !d.halfTop && d.dInn >= d.dInnT && botTotal() > myTotal()) {
+    if (!d.dOver && !d.halfTop && d.dInn >= d.dInnT && bottomTotal() > topTotal()) {
       d.dOver = true;
       saveMatchResult();
       msg += L(' → 끝내기!', ' → Walk-off!');
@@ -333,11 +354,22 @@ export function makeDuel(game, L, KOref) {
           d.phase = 'pitching'; d.t0 = now;
           d.hitAt = now + d.dp.flightMs;
           d.fly = null;
-          if (!d.halfTop) d.botAct = makeBotAct(d.dp);
+          if (!d.pvp && !d.halfTop) d.botAct = makeBotAct(d.dp);
         }
         break;
       case 'pitching':
-        if (!d.halfTop && d.botAct && d.botAct.swing && !d.swung && now >= d.botAct.at) {
+        if (d.pvp) {
+          // 타자인 나만 판정 권한 — 노스윙도 이벤트로 알린다. 투수는 result 대기.
+          if (!myBat() && d.dp && now > d.hitAt + 20_000 && !d.pvpStatus) {
+            d.pvpStatus = L('상대 응답 없음 — Esc 로 나가면 기록됩니다', 'Opponent not responding — press Esc to leave (result is recorded)');
+            d.oppAlive = false;
+          }
+          if (myBat() && d.dp && !d.swung && now > d.hitAt + dCfg().thresholds.poor + 170) {
+            d.swung = true;
+            d.pvpSend?.('result', { sw: false });
+            duelResolve(false, null);
+          }
+        } else if (!d.halfTop && d.botAct && d.botAct.swing && !d.swung && now >= d.botAct.at) {
           d.swung = true; d.swingAt = now;
           duelResolve(true, d.botAct.off);
         } else if (d.dp && now > d.hitAt + dCfg().thresholds.poor + 170) {
@@ -357,6 +389,6 @@ export function makeDuel(game, L, KOref) {
     }
   }
 
-  return { beginDuel, duelNextPitch, choosePitch, duelSwing, duelTick,
+  return { beginDuel, duelNextPitch, choosePitch, duelSwing, duelTick, duelResolve, saveMatchResult,
            myBat, myTotal, botTotal, dCfg, lvl };
 }

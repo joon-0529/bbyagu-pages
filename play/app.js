@@ -2,10 +2,11 @@
 // 정본은 앱(main.swift)과 엔진(engine/src/rules.ts).
 // 이 파일은 main.swift 를 **같은 수치로** 옮긴 것이다 — 값을 바꾸고 싶으면
 // 여기서 바꾸지 말고 정본을 바꾼 뒤 다시 옮길 것.
-// 화면: home / matchMenu / matchSetup / race / match  (리더보드·기록·PvP 는 다음 단계)
+// 화면: home / matchMenu / matchSetup / pvpMenu / pvpLobby / race / match / leaderboard / records / settings
 import { DIFFICULTY, SessionState } from './rules.js';
 import { makeDuel, DUEL_LEVELS, HALF_CHANGE_MS, statHits, statEyePct, statAvgOff } from './duel.js';
 import { makeOnline, TERMS_KO, TERMS_EN } from './online.js';
+import { makePvp } from './pvp.js';
 
 // ═══ 언어 ═══
 let KO = (localStorage.getItem('appLang') ?? (navigator.language || 'ko')).startsWith('ko');
@@ -55,8 +56,14 @@ const game = {
   halfTop: true, myInnRuns: [], botInnRuns: [], curHalfRuns: 0,
   myStats: null, oppStats: null,
   duelEndedAt: 0, halfChangeAt: 0, halfChangePending: false,
+  // ── PvP (1:1 온라인 — 서버는 릴레이만, 판정은 양쪽이 같은 코드로 재현) ──
+  pvp: false, isHost: false, roomCode: '', playerId: '', oppNick: '',
+  oppW: 0, oppL: 0, matchedAt: 0, lastSeq: 0, pendingEvents: [], pollActive: false,
+  oppAlive: true, pvpStatus: '', rematchMine: false, rematchOpp: false,
+  pollGen: 0, pollFails: 0, ranked: false, matchTicket: null, matchmakeStartAt: 0, pvpSel: 0,
   get canPause() {
     if (this.paused) return true;
+    if (this.pvp) return false;               // 상대가 기다린다 — PvP 는 멈출 수 없다
     return this.phase !== 'idle' && this.phase !== 'ended' && this.phase !== 'pitching';
   },
 };
@@ -64,6 +71,7 @@ if (!DUEL_LEVELS[game.duelLevel]) game.duelLevel = '보통';
 if (![3, 6, 9].includes(game.matchInnings)) game.matchInnings = 3;
 const duel = makeDuel(game, L, () => KO);
 const online = makeOnline(L);
+const pvp = makePvp(game, duel, online, L, { shortDisplay, leaveToHome });
 if (game.screen === 'home') online.ensureIdentity();
 
 // ── 리더보드 페이지 정의 (main.swift lbPages) ──
@@ -366,6 +374,20 @@ function leaveToHome() {
   game.paused = false; game.helpOpen = false;
   game.screen = 'home'; game.phase = 'idle'; game.menuNotice = '';
 }
+function leaveMatchToHome() {
+  if (game.pvp) pvp.leave(true); else leaveToHome();
+}
+function enterPvpMenu() {
+  game.matchSel = 1; game.pvpStatus = ''; game.pvpSel = 0; game.menuNotice = '';
+  game.screen = 'pvpMenu';
+}
+function promptJoinCode() {
+  const v = window.prompt(L('호스트가 알려준 4자리 방 코드를 입력하세요.', 'Enter the 4-digit room code from the host.'), '');
+  if (v === null) return;
+  const code = v.toUpperCase().replace(/\s/g, '');
+  if (code.length !== 4) { game.pvpStatus = L('코드는 4자리입니다', 'The code is 4 digits'); return; }
+  pvp.joinRoom(code);
+}
 function changeDuelSetting(row, back) {
   switch (row) {
     case 0: {
@@ -393,6 +415,11 @@ function startDuel() {
 }
 // duel.js 의 saveMatchResult 가 부른다 — 지옥 봇전만 온라인 보드 제출
 game.onMatchResult = (myRuns, botRuns) => {
+  if (game.pvp) {                             // 랭크전 결과 보고 — 양쪽 다 보고, 서버가 거울상일 때 확정 (D27)
+    if (game.ranked) online.submitPvpResult(game.roomCode, game.playerId, myRuns, botRuns)
+      .then((msg) => { if (msg) game.pvpStatus = msg; });
+    return;
+  }
   if (game.duelLevel !== '지옥') return;
   game.onlineStatus = '';
   online.submitDuel({
@@ -600,7 +627,7 @@ function draw(now) {
   // D78: 비거리 상한 없음 — 그림은 155m 까지만 (main.swift 와 동일)
   const x_of = (m) => hitX + (Math.min(m, 155) / 155) * (fieldEnd - hitX);
   const tickColor = ink(0.45);
-  const inMenus = ['home', 'matchMenu', 'matchSetup', 'settings'].includes(game.screen);
+  const inMenus = ['home', 'matchMenu', 'matchSetup', 'pvpMenu', 'pvpLobby', 'settings'].includes(game.screen);
   const vcfg = game.mode === 'duel' ? duel.dCfg() : cfg;
 
   // ── 일시정지 + ? 버튼 (레이스·경기 진행 중에만) ──
@@ -626,8 +653,9 @@ function draw(now) {
     ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
     ctx.beginPath(); ctx.arc(h.x + 12, h.y + 12, 12, 0, 7); ctx.stroke();
     text('?', h.x + 12, h.y + 5, mono(14, 700), ink(0.7), 'center');
-    // ↻ 처음부터 다시 (D77) — 원호 + 화살촉
+    // ↻ 처음부터 다시 (D77) — 원호 + 화살촉. PvP 에는 없다 (상대가 있다)
     const rs = { x: W - 94, y: 10, w: 24, h: 24 };
+    if (!game.pvp) {
     reg(rs, 'restart');
     ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
     ctx.beginPath(); ctx.arc(rs.x + 12, rs.y + 12, 12, 0, 7); ctx.stroke();
@@ -636,6 +664,7 @@ function draw(now) {
     const tx = rs.x + 12 + 6 * Math.cos(-Math.PI * 0.35), ty = rs.y + 12 + 6 * Math.sin(-Math.PI * 0.35);
     ctx.fillStyle = ink(0.7);
     ctx.beginPath(); ctx.moveTo(tx + 2.5, ty - 2.5); ctx.lineTo(tx - 3.5, ty - 1.5); ctx.lineTo(tx + 0.5, ty + 3.5); ctx.closePath(); ctx.fill();
+    }
   }
 
   // ═══ 전용 화면들 — 맥처럼 필드 없이 (지면·담장을 그리기 전에 돌아간다) ═══
@@ -735,9 +764,11 @@ function draw(now) {
   if (game.mode === 'duel') {
     if (game.phase !== 'idle' && game.phase !== 'ended') {
       drawDuelScoreboard(hudY);
+      const warn = game.pvp && !game.oppAlive ? L(' · 상대 연결 불안정', ' · opponent connection unstable') : '';
+      const status = game.pvp && game.pvpStatus ? ` · ${game.pvpStatus}` : '';
       const note = game.paused
         ? L('일시정지 — P 재개 · Esc 홈', 'Paused — P resume · Esc home')
-        : game.judgeText;
+        : game.judgeText + warn + status;
       if (note) text(note, 18, hudY + 46, hudFont, ink(0.9));
     }
   } else {
@@ -830,6 +861,7 @@ function draw(now) {
       && game.halfChangeAt > 0) {
     drawHalfChangeCard(now - game.halfChangeAt);
   }
+  if (game.mode === 'duel' && game.screen === 'match' && game.ranked && game.matchedAt > 0) drawMatched(now - game.matchedAt);
   if (game.mode === 'duel' && game.phase === 'ended') drawDuelOver(now);
 
   // ── 조작 안내 오버레이 — 항상 맨 위 ──
@@ -939,6 +971,37 @@ function drawMenus(hudY, g, now) {
         [L('Space 경기 시작', 'Space to start'), false],
       ];
       break;
+    case 'pvpMenu':
+      // PvP 에는 봇이 없어 난이도의 "봇 선구안" 축이 놀고, 남는 건 양쪽 타격 판정 난도뿐
+      rows = [
+        [L('1  방 만들기', '1  Create room'), game.pvpSel === 0],
+        [L('2  코드로 참가', '2  Join with code'), game.pvpSel === 1],
+        [L('3  랜덤 매칭 — 3이닝·어려움·물리 준수 고정', '3  Random match — fixed: 3 innings · Hard · realistic physics'), game.pvpSel === 2],
+        [L('이닝      ', 'Innings   ') + `◂ ${game.matchInnings} ▸`, game.pvpSel === 3],
+        [L('타격 난도 ', 'Batting   ') + `◂ ${DUEL_LEVELS[game.duelLevel].label(L)} ▸`, game.pvpSel === 4],
+        [L('궤적      ', 'Physics   ') + `◂ ${game.physChaos ? L('물리 위반', 'arcade') : L('물리 준수', 'realistic')} ▸`, game.pvpSel === 5],
+      ];
+      if (game.pvpStatus) rows.push([game.pvpStatus, false]);
+      break;
+    case 'pvpLobby':
+      if (game.matchTicket) {
+        const wait = Math.floor((now - game.matchmakeStartAt) / 1000);
+        rows = [
+          [L(`랜덤 매칭 — 상대 찾는 중… ${wait}초`, `Random match — searching… ${wait}s`), true],
+          [L('표준 규칙: 3이닝 · 어려움 · 물리 준수', 'Standard rules: 3 innings · Hard · realistic physics'), false],
+        ];
+        if (wait >= 30) rows.push([L('지금은 대기 인원이 없는 것 같아요 — 방 코드로 친구와 해보세요', 'No one seems to be waiting — try a room code with a friend'), false]);
+      } else {
+        rows = [
+          [L('방 코드:  ', 'Room code:  ') + game.roomCode, true],
+          [L('친구에게 이 코드를 알려주세요', 'Share this code with a friend'), false],
+          [L('상대 참가 대기 중…', 'Waiting for opponent…'), false],
+        ];
+        if (game.pvpStatus) rows.push([game.pvpStatus, false]);
+      }
+      rows.push(['', false], [L('취소 (Esc)', 'Cancel (Esc)'), false]);
+      game.lobbyCancelRow = rows.length - 1;
+      break;
   }
   const rowH = 20, rowsY = hudY;
   rows.forEach(([label, sel], i) => {
@@ -950,6 +1013,8 @@ function drawMenus(hudY, g, now) {
   const hint =
     game.screen === 'home' ? L('↑↓ 선택 · Space 확인 (클릭도 됩니다)', '↑↓ select · Space confirm (click works too)')
     : game.screen === 'matchMenu' ? L('1/2 선택 · Esc 뒤로', '1/2 select · Esc back')
+    : game.screen === 'pvpMenu' ? L('↑↓ 항목 · ◂▸ 방 설정 · Space 확인 · Esc 뒤로', '↑↓ item · ◂▸ room setting · Space confirm · Esc back')
+    : game.screen === 'pvpLobby' ? L('Esc 취소', 'Esc cancel')
     : game.screen === 'settings' ? L('1~7 또는 ↑↓+Space 로 변경 · Esc 뒤로', '1–7 or ↑↓+Space to change · Esc back')
     : L('↑↓ 항목 · ◂▸ 변경 · Space 시작 · Esc 뒤로', '↑↓ item · ◂▸ change · Space start · Esc back');
   text(hint, 28, rowsY + Math.max(rows.length, 3) * rowH + 8, smallFont, ink(0.4));
@@ -963,7 +1028,7 @@ function drawMenus(hudY, g, now) {
 
 // ═══ 경기 스코어보드 (main.swift drawDuelScoreboard) ═══
 function drawDuelScoreboard(hudY) {
-  const oppName = L('봇', 'Bot');
+  const oppName = game.pvp ? game.oppNick.slice(0, 3) : L('봇', 'Bot');
   const cellW = 22, nameW = 34, left = 18;
   const maxCells = Math.max(3, Math.floor((W * 0.46 - nameW - 34) / cellW));
   const shown = Math.min(game.dInnT, maxCells);
@@ -1009,8 +1074,14 @@ function drawDuelScoreboard(hudY) {
   const inningText = KO ? `${Math.min(game.dInn, game.dInnT)}회${game.halfTop ? '초' : '말'}`
                         : `${game.halfTop ? 'Top' : 'Bot'} ${Math.min(game.dInn, game.dInnT)}`;
   text(inningText, rx, hudY - 10, mono(13, 700), ink(0.85));
-  const sub = `${duel.myBat() ? L('내 공격', 'Offense') : L('내 수비', 'Defense')} · ${DUEL_LEVELS[game.duelLevel].label(L)}`;
-  text(sub, rx, hudY + 8, smallFont, ink(0.45));
+  // PvP 는 닉네임(#1234 포함)이 길어 두 줄 — 한 줄이면 오른쪽 볼카운트를 침범한다 (H7)
+  if (game.pvp) {
+    text(duel.myBat() ? L('내 공격', 'Offense') : L('내 수비', 'Defense'), rx, hudY + 8, smallFont, ink(0.45));
+    text(`vs ${game.oppNick}`, rx, hudY + 26, smallFont, ink(0.45));
+  } else {
+    const sub = `${duel.myBat() ? L('내 공격', 'Offense') : L('내 수비', 'Defense')} · ${DUEL_LEVELS[game.duelLevel].label(L)}`;
+    text(sub, rx, hudY + 8, smallFont, ink(0.45));
+  }
 
   const dotRow = (label, n, total, x, y) => {
     text(label, x, y, smallFont, ink(0.5));
@@ -1105,7 +1176,7 @@ function drawRaceOver(sum, now) {
 
 function drawDuelOver(now) {
   const m = game.myStats, o = game.oppStats;
-  const oppName = L('봇', 'Bot');
+  const oppName = game.pvp ? game.oppNick.slice(0, 4) : L('봇', 'Bot');
   const my = duel.myTotal(), bot = duel.botTotal();
   const iWon = my > bot, oppWon = bot > my;
   const t = game.duelEndedAt > 0 ? now - game.duelEndedAt : 9999;
@@ -1151,8 +1222,42 @@ function drawDuelOver(now) {
     text(b, px + 150, y, smallFont, ink((i === 0 ? 0.5 : 0.8) * appear));
     text(c2, px + 240, y, smallFont, ink((i === 0 ? 0.5 : 0.8) * appear));
   });
-  c((game.onlineStatus ? game.onlineStatus + ' · ' : '')
-    + L('Space 새 경기 · Esc 홈', 'Space new game · Esc home'), hintY, smallFont, ink(0.5 * appear));
+  let hint;
+  if (game.pvp) {
+    if (!game.ranked) {                       // 방 코드전 — 재경기 버튼 (랭크전은 매칭으로만)
+      const r = { x: cx - 52, y: hintY - 34, w: 104, h: 26 };
+      ctx.fillStyle = ink(0.06); roundedRect(r.x, r.y, r.w, r.h, 6); ctx.fill();
+      ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.1; roundedRect(r.x, r.y, r.w, r.h, 6); ctx.stroke();
+      text(L('재경기', 'Rematch'), cx, r.y + 6, mono(12, 700), ink(0.9), 'center');
+      reg(r, 'rematch');
+    }
+    const base = game.ranked ? L('Space/Esc 홈', 'Space/Esc home') : L('R 재경기 · Space/Esc 홈', 'R rematch · Space/Esc home');
+    hint = game.pvpStatus ? `${game.pvpStatus} · ${base}` : base;
+  } else {
+    hint = (game.onlineStatus ? game.onlineStatus + ' · ' : '') + L('Space 새 경기 · Esc 홈', 'Space new game · Esc home');
+  }
+  c(hint, hintY, smallFont, ink(0.5 * appear));
+}
+
+// 매칭 성사 알림 (랭크전 시작 직후) — main.swift drawMatched
+function drawMatched(t) {
+  const dur = 2600;
+  if (t < 0 || t >= dur) return;
+  const fade = Math.min(1, Math.min(t / 150, (dur - t) / 400));
+  const card = { x: W / 2 - 168, y: H / 2 - 44, w: 336, h: 88 };
+  ctx.globalAlpha = 0.97 * fade;
+  ctx.fillStyle = bg(); roundedRect(card.x, card.y, card.w, card.h, 10); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = ORANGE() + `${0.9 * fade})`; ctx.lineWidth = 2;
+  roundedRect(card.x, card.y, card.w, card.h, 10); ctx.stroke();
+  text(L('매칭 완료', 'Match found'), W / 2, card.y + 10, mono(20, 900), ink(0.9 * fade), 'center');
+  text(`vs  ${game.oppNick}`, W / 2, card.y + 38, mono(15, 700), ORANGE() + `${fade})`, 'center');
+  // 전적이 없으면 승률을 계산할 수 없다 — 숫자를 지어내지 말고 그대로 말한다
+  const n = game.oppW + game.oppL;
+  const rec = n === 0 ? L('랭크전 기록 없음', 'No ranked record')
+    : L(`승률 ${Math.round((game.oppW / n) * 100)}%  ·  ${game.oppW}승 ${game.oppL}패`,
+        `Win rate ${Math.round((game.oppW / n) * 100)}%  ·  ${game.oppW}W ${game.oppL}L`);
+  text(rec, W / 2, card.y + 62, mono(11, 500), ink(0.5 * fade), 'center');
 }
 
 // 공수 교대 알림 (시안 C — 카드형)
@@ -1525,16 +1630,32 @@ addEventListener('keydown', (e) => {
       break;
     case 'matchMenu':
       if (e.code === 'Digit1') { game.matchSel = 0; game.screen = 'matchSetup'; }
-      else if (e.code === 'Digit2') {
-        game.matchSel = 1;
-        game.menuNotice = L('웹 버전 PvP는 준비 중입니다', 'PvP is coming soon on web');
-      }
+      else if (e.code === 'Digit2') enterPvpMenu();
       else if (e.code === 'ArrowUp' || e.code === 'ArrowDown') game.matchSel = 1 - game.matchSel;
       else if (space || e.code === 'Enter') {
         if (game.matchSel === 0) game.screen = 'matchSetup';
-        else game.menuNotice = L('웹 버전 PvP는 준비 중입니다', 'PvP is coming soon on web');
+        else enterPvpMenu();
       }
       else if (e.code === 'Escape') { game.screen = 'home'; game.menuNotice = ''; }
+      break;
+    case 'pvpMenu':
+      if (e.code === 'ArrowUp') game.pvpSel = (game.pvpSel + 5) % 6;
+      else if (e.code === 'ArrowDown') game.pvpSel = (game.pvpSel + 1) % 6;
+      else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+        if (game.pvpSel >= 3) changeDuelSetting(game.pvpSel - 3, e.code === 'ArrowLeft');
+      }
+      else if (e.code === 'Digit1') pvp.createRoom();
+      else if (e.code === 'Digit2') promptJoinCode();
+      else if (e.code === 'Digit3') pvp.randomMatch();
+      else if (space || e.code === 'Enter') {
+        if (game.pvpSel === 0) pvp.createRoom();
+        else if (game.pvpSel === 1) promptJoinCode();
+        else if (game.pvpSel === 2) pvp.randomMatch();
+      }
+      else if (e.code === 'Escape') game.screen = 'matchMenu';
+      break;
+    case 'pvpLobby':
+      if (e.code === 'Escape') { pvp.leave(false); game.screen = 'pvpMenu'; }
       break;
     case 'matchSetup':
       if (e.code === 'ArrowUp') game.setupSel = (game.setupSel + 2) % 3;
@@ -1556,7 +1677,7 @@ addEventListener('keydown', (e) => {
       break;
     case 'match':
       if (space) {
-        if (game.phase === 'ended') startDuel();
+        if (game.phase === 'ended') { if (game.pvp) leaveMatchToHome(); else startDuel(); }
         else if (duel.myBat()) duel.duelSwing(e.timeStamp);
       }
       else if (e.code === 'ArrowUp' || e.code === 'ArrowDown') {
@@ -1569,9 +1690,12 @@ addEventListener('keydown', (e) => {
       else if (e.code === 'Digit2') duel.choosePitch(true, false);
       else if (e.code === 'Digit3') duel.choosePitch(false, true);
       else if (e.code === 'Digit4') duel.choosePitch(false, false);
-      else if (e.code === 'KeyR') startDuel();
+      else if (e.code === 'KeyR') {
+        if (!game.pvp) startDuel();
+        else if (game.phase === 'ended' && !game.ranked) pvp.requestRematch();
+      }
       else if (e.code === 'KeyP') togglePause();
-      else if (e.code === 'Escape') leaveToHome();
+      else if (e.code === 'Escape') leaveMatchToHome();
       break;
   }
 });
@@ -1587,6 +1711,7 @@ canvas.addEventListener('pointerdown', (e) => {
     const a = hitR.action;
     if (a === 'helpToggle') { openHelp(); return; }
     if (a === 'restart') { if (game.screen === 'race') startSession(); else startDuel(); return; }
+    if (a === 'rematch') { pvp.requestRematch(); return; }
     if (a === 'pauseToggle') {
       if (game.canPause || game.paused) togglePause();
       else if (game.phase === 'pitching') game.judgeText = L('투구 중에는 멈출 수 없습니다', "Can't pause during a pitch");
@@ -1604,7 +1729,14 @@ canvas.addEventListener('pointerdown', (e) => {
       else if (game.screen === 'matchMenu') {
         game.matchSel = i;
         if (i === 0) game.screen = 'matchSetup';
-        else game.menuNotice = L('웹 버전 PvP는 준비 중입니다', 'PvP is coming soon on web');
+        else enterPvpMenu();
+      } else if (game.screen === 'pvpMenu') {
+        if (i === 0) pvp.createRoom();
+        else if (i === 1) promptJoinCode();
+        else if (i === 2) pvp.randomMatch();
+        else if (i <= 5) { game.pvpSel = i; changeDuelSetting(i - 3, false); }
+      } else if (game.screen === 'pvpLobby') {
+        if (i === game.lobbyCancelRow) { pvp.leave(false); game.screen = 'pvpMenu'; }
       } else if (game.screen === 'matchSetup') {
         if (i <= 2) { game.setupSel = i; changeDuelSetting(i, false); }
         else if (i === 4) startDuel();
@@ -1627,7 +1759,7 @@ canvas.addEventListener('pointerdown', (e) => {
     else swing(e.timeStamp);
   } else if (game.screen === 'match') {
     if (game.paused) { togglePause(); return; }
-    if (game.phase === 'ended') startDuel();
+    if (game.phase === 'ended') { if (game.pvp) leaveMatchToHome(); else startDuel(); }
     else if (duel.myBat()) duel.duelSwing(e.timeStamp);
   }
 });
@@ -1655,6 +1787,7 @@ updateChrome();
 // ═══ 프레임 루프 ═══
 function tick(now) {
   online.refreshSeedIfStale();   // D79
+  if (game.pvp) pvp.processEvents(now);   // 일시정지 여부와 무관 — 상대 이벤트는 항상 소비
   // helpOpen 은 틱을 막지 않는다 — 투구 중에 안내를 열면 그 공은 그냥 날아간다
   // (맥과 같은 규칙. canPause 가 막아서 시간을 벌 수 없다)
   if (game.paused) return;
@@ -1672,6 +1805,6 @@ function frame(t) {
 requestAnimationFrame(frame);
 
 // 디버그/자동화 훅 — 상태 점검용 (게임 조작은 입력 경로로만)
-window.__bb = { game, duel, online, startSession, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
+window.__bb = { game, duel, online, pvp, startSession, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
                 get regions() { return regions; }, get scale() { return scale; },
                 get summary() { return game.session.summary(); } };
