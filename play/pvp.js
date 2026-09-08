@@ -25,6 +25,7 @@ export function makePvp(game, duel, online, L, { shortDisplay, leaveToHome }) {
       speed: Math.min(220, Math.max(80, x.speed)),
       flightMs: Math.min(1500, Math.max(200, x.flightMs)),
       k: num('k', 2.0, 1.0, 6.0), rv: num('rv', 0.6, 0.2, 0.98), noise: num('noise', 0, -4, 4),
+      aimOff: num('aimOff', 0, -10, 10),   // 구버전은 안 보낸다 → 0
     };
   }
 

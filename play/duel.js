@@ -5,15 +5,16 @@ import { DIFFICULTY, judge, distanceOf } from './rules.js';
 
 export const DUEL_LEVELS = {
   // rawValue(저장값)는 한국어 고정 — 맥 UserDefaults 와 같은 규칙
-  '보통':   { label: (L) => L('보통', 'Normal'), fastFlight: 520, breakFlight: 700,
+  // D83(9/8): 비행 7% 단축 + 표기 구속 +7 — main.swift DuelLevel 과 같은 수치
+  '보통':   { label: (L) => L('보통', 'Normal'), fastFlight: 484, breakFlight: 651,
               fastReveal: 55, breakReveal: 72, core: 'NORMAL', goodWindow: 50,
-              fastSpeedBase: 142, breakSpeedBase: 119, botEyeBonus: 0.0, botChaseProb: 0.16 },
-  '어려움': { label: (L) => L('어려움', 'Hard'), fastFlight: 430, breakFlight: 590,
+              fastSpeedBase: 149, breakSpeedBase: 126, botEyeBonus: 0.0, botChaseProb: 0.16 },
+  '어려움': { label: (L) => L('어려움', 'Hard'), fastFlight: 400, breakFlight: 549,
               fastReveal: 66, breakReveal: 80, core: 'HARD', goodWindow: 42,
-              fastSpeedBase: 149, breakSpeedBase: 125, botEyeBonus: 0.06, botChaseProb: 0.11 },
-  '지옥':   { label: (L) => L('지옥', 'Hell'), fastFlight: 360, breakFlight: 500,
+              fastSpeedBase: 156, breakSpeedBase: 132, botEyeBonus: 0.06, botChaseProb: 0.11 },
+  '지옥':   { label: (L) => L('지옥', 'Hell'), fastFlight: 335, breakFlight: 465,
               fastReveal: 76, breakReveal: 88, core: 'HARD', goodWindow: 34,
-              fastSpeedBase: 156, breakSpeedBase: 131, botEyeBonus: 0.12, botChaseProb: 0.07 },
+              fastSpeedBase: 163, breakSpeedBase: 138, botEyeBonus: 0.12, botChaseProb: 0.07 },
 };
 export const BOT_SIGMA = 58;
 export const HALF_CHANGE_MS = 1400;
@@ -30,6 +31,13 @@ function spread(fast, strike, high) {
   if (strike) return { inOff: randInt(-14, 14), miss: 0 };
   const cap = high ? (fast ? 8 : 18) : 14;
   return { inOff: 0, miss: randInt(3, cap) };
+}
+// D83 — 공마다 다른 실루엣: 겨냥선(aimOff, px, +면 낮게)·곡률(k). main.swift shapeVariation 동일
+function shapeVariation(fast, revealPct) {
+  const base = 1.5 + ((revealPct - 30) / 55) * 2.3;
+  const k = fast ? 1.4 + Math.random() * 0.7 : base + (Math.random() - 0.5);
+  const aimOff = fast ? randInt(-6, 4) : randInt(-8, 10);
+  return { aimOff, k: Math.round(k * 100) / 100 };
 }
 const emptyStats = () => ({
   h1: 0, h2: 0, h3: 0, hr: 0, so: 0, bb: 0,
@@ -123,13 +131,14 @@ export function makeDuel(game, L, KOref) {
     const revealPct = fast ? lvl().fastReveal : lvl().breakReveal;
     const bh = Math.random() < 0.5;
     const bs = spread(fast, strike, bh);
+    const shape = shapeVariation(fast, revealPct);
     d.dp = {
       fast, strike, high: bh, inOff: bs.inOff, miss: bs.miss,
       speed: (fast ? lvl().fastSpeedBase : lvl().breakSpeedBase) + randInt(0, 8),
       flightMs: fast ? lvl().fastFlight : lvl().breakFlight,
-      k: 1.5 + ((revealPct - 30) / 55) * 2.3,
-      rv: revealPct / 100,
+      k: shape.k, rv: revealPct / 100,
       noise: Math.round((Math.random() * 80 - 40)) / 10,
+      aimOff: shape.aimOff,
     };
     d.phase = 'select';
     d.selUntil = now + 650 + Math.random() * 550;
@@ -143,13 +152,14 @@ export function makeDuel(game, L, KOref) {
     const revealPct = fast ? lvl().fastReveal : lvl().breakReveal;
     const mh = d.pitchCourse === 'random' ? Math.random() < 0.5 : d.pitchCourse === 'high';
     const ms = spread(fast, strike, mh);
+    const shape = shapeVariation(fast, revealPct);
     d.dp = {
       fast, strike, high: mh, inOff: ms.inOff, miss: ms.miss,
       speed: (fast ? lvl().fastSpeedBase : lvl().breakSpeedBase) + randInt(0, 8),
       flightMs: fast ? lvl().fastFlight : lvl().breakFlight,
-      k: 1.5 + ((revealPct - 30) / 55) * 2.3,
-      rv: revealPct / 100,
+      k: shape.k, rv: revealPct / 100,
       noise: Math.round((Math.random() * 80 - 40)) / 10,
+      aimOff: shape.aimOff,
     };
     if (d.pvp) d.pvpSend?.('pitch', { ...d.dp });   // 랜덤 요소까지 확정해 전송 — 양쪽이 같은 공
     d.judgeText = '';

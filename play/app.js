@@ -822,11 +822,11 @@ function draw(now) {
     const bx2 = (pitX - 15) + (hitX - (pitX - 15)) * p;
     const zTop = hitY - 15, zBot = hitY + 15;
     const yStrike = hitY + pt.inOff;
-    const yAim = pt.fast ? zTop - 8 : zTop - 18;
+    const yAim = (pt.fast ? zTop - 8 : zTop - 18) + (pt.aimOff ?? 0);   // D83 겨냥선 변주
     const yBallHigh = Math.max(yAim, zTop - pt.miss);
     const yBall = pt.high ? yBallHigh : zBot + pt.miss;
     const yFinal = pt.strike ? yStrike : yBall;
-    const kShape = pt.fast ? 1.7 : pt.k;
+    const kShape = pt.fast ? Math.min(2.1, pt.k) : pt.k;   // D83 직구도 곡률 변주 (구버전 k 는 2.1 로)
     const start = g - 32;
     let by;
     if (game.physChaos) {
