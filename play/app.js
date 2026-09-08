@@ -73,6 +73,10 @@ const duel = makeDuel(game, L, () => KO);
 const online = makeOnline(L);
 const pvp = makePvp(game, duel, online, L, { shortDisplay, leaveToHome });
 if (game.screen === 'home') online.ensureIdentity();
+{ // 링크 진입 (D87): ?room=CODE — 주소는 지워서 새로고침 때 다시 참가하지 않게
+  const code = (new URLSearchParams(location.search).get('room') ?? '').toUpperCase();
+  if (/^[A-Z2-9]{4}$/.test(code)) { game.pendingRoomCode = code; history.replaceState(null, '', location.pathname); }
+}
 
 // ── 리더보드 페이지 정의 (main.swift lbPages) ──
 const LB_PAGES = [
@@ -381,6 +385,15 @@ function enterPvpMenu() {
   game.matchSel = 1; game.pvpStatus = ''; game.pvpSel = 0; game.menuNotice = '';
   game.screen = 'pvpMenu';
 }
+// 방 코드 복사·공유 (D87) — 브라우저 공유 시트가 있으면 그것, 없으면 클립보드
+async function shareRoomCode() {
+  const text = L(`별별야구 PvP 방 코드 ${game.roomCode}\n링크로 바로 참가: ${SHARE_BASE}?room=${game.roomCode}`,
+                 `BB Baseball PvP room code ${game.roomCode}\nJoin with this link: ${SHARE_BASE}?room=${game.roomCode}`);
+  let copied = false;
+  try { await navigator.clipboard.writeText(text); copied = true; game.pvpStatus = L('코드와 링크를 복사했습니다', 'Code and link copied'); } catch { /* 권한 없음 */ }
+  if (navigator.share) { try { await navigator.share({ text }); return; } catch { /* 취소 */ } }
+  if (!copied) window.prompt(L('복사해서 친구에게 보내세요', 'Copy this and send it to a friend'), text);   // 둘 다 안 되면 직접 복사
+}
 function promptJoinCode() {
   const v = window.prompt(L('호스트가 알려준 4자리 방 코드를 입력하세요.', 'Enter the 4-digit room code from the host.'), '');
   if (v === null) return;
@@ -429,6 +442,7 @@ game.onMatchResult = (myRuns, botRuns) => {
 };
 
 // ═══ 포즈 (main.swift batterPose/pitcherPose 포팅) ═══
+const SHARE_BASE = 'https://joon-0529.github.io/bbyagu-pages/play/';   // 공유 링크 기준 (D87)
 const SWING_MS = 150;
 // D84 — 축포는 공이 담장을 넘는 순간부터. 타구 애니메이션 900ms 에서 담장 통과 시각 역산 (맥 cheerDelay)
 export function cheerDelay(dist, hr, line) {
@@ -1000,7 +1014,10 @@ function drawMenus(hudY, g, now) {
           [L('방 코드:  ', 'Room code:  ') + game.roomCode, true],
           [L('친구에게 이 코드를 알려주세요', 'Share this code with a friend'), false],
           [L('상대 참가 대기 중…', 'Waiting for opponent…'), false],
+          ['', false],
+          [L('C  코드 복사·공유', 'C  Copy · share code'), false],
         ];
+        game.lobbyShareRow = rows.length - 1;
         if (game.pvpStatus) rows.push([game.pvpStatus, false]);
       }
       rows.push(['', false], [L('취소 (Esc)', 'Cancel (Esc)'), false]);
@@ -1688,6 +1705,7 @@ addEventListener('keydown', (e) => {
       break;
     case 'pvpLobby':
       if (e.code === 'Escape') { pvp.leave(false); game.screen = 'pvpMenu'; }
+      else if (e.code === 'KeyC' && !game.matchTicket && game.roomCode) shareRoomCode();
       break;
     case 'matchSetup':
       if (e.code === 'ArrowUp') game.setupSel = (game.setupSel + 2) % 3;
@@ -1769,6 +1787,7 @@ canvas.addEventListener('pointerdown', (e) => {
         else if (i <= 5) { game.pvpSel = i; changeDuelSetting(i - 3, false); }
       } else if (game.screen === 'pvpLobby') {
         if (i === game.lobbyCancelRow) { pvp.leave(false); game.screen = 'pvpMenu'; }
+        else if (i === game.lobbyShareRow && !game.matchTicket && game.roomCode) shareRoomCode();
       } else if (game.screen === 'matchSetup') {
         if (i <= 2) { game.setupSel = i; changeDuelSetting(i, false); }
         else if (i === 4) startDuel();
@@ -1818,7 +1837,16 @@ function updateChrome() {
 updateChrome();
 
 // ═══ 프레임 루프 ═══
+// 링크(`?room=CODE`)로 받은 방 코드를 메뉴에서 소비 (D87) — 플레이 중이면 메뉴로 돌아왔을 때
+function consumePendingLink() {
+  if (!game.pendingRoomCode || !['home', 'matchMenu', 'pvpMenu', 'matchSetup'].includes(game.screen)) return;
+  const code = game.pendingRoomCode; game.pendingRoomCode = null;
+  enterPvpMenu(); game.pvpSel = 1;
+  if (online.enabled()) pvp.joinRoom(code);
+  else game.pvpStatus = L(`링크의 방 ${code} — 설정에서 온라인 참여를 켠 뒤 2 로 참가하세요`, `Room ${code} from link — enable online play in Settings, then press 2 to join`);
+}
 function tick(now) {
+  if (game.pendingRoomCode) consumePendingLink();
   online.refreshSeedIfStale();   // D79
   if (game.pvp) pvp.processEvents(now);   // 일시정지 여부와 무관 — 상대 이벤트는 항상 소비
   // helpOpen 은 틱을 막지 않는다 — 투구 중에 안내를 열면 그 공은 그냥 날아간다
