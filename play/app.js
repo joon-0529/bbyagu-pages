@@ -727,7 +727,7 @@ function draw(now) {
     ctx.fillStyle = ink(0.05); ctx.fillRect(br.x, br.y, br.w, br.h);
     ctx.strokeStyle = ink(0.3); ctx.lineWidth = 1.2;
     ctx.strokeRect(br.x, br.y, br.w, br.h);
-    const board = online.adBoardRemote ?? '별별야구';
+    const board = online.adBoardRemote ?? L('별별야구', 'BB Baseball');   // 기본 문구는 언어를 따른다 (D85)
     if (online.adBoardImg) {
       // 그림 전광판 (D76) — 판 안쪽에 비율 유지
       const img = online.adBoardImg, iw = br.w - 10, ih = br.h - 10;
@@ -1782,6 +1782,7 @@ function syncPageTheme() {
   document.body.style.color = isNight ? 'rgb(235,235,235)' : 'rgb(0,0,0)';
 }
 function updateChrome() {
+  document.title = L('별별야구 : The Game', 'BB Baseball : The Game');
   document.getElementById('title').textContent =
     L('별별야구 : The Game', 'BB Baseball : The Game');
   document.getElementById('hint').textContent =
