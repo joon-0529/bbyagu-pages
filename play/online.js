@@ -9,6 +9,8 @@ export function makeOnline(L) {
     identityId: null,
     display: null,
     nextSeed: null,          // {id, seed}
+    nextSeedAt: 0,           // D79: 받은(받으러 간) 시각 ms
+    prefetchingSeed: false,
     statusLine: '',
     tried: false,
     connecting: false,
@@ -75,10 +77,16 @@ export function makeOnline(L) {
 
   // 서버가 내려주는 전광판 문구 — 후원사 교체를 업데이트 없이 (D74). 참여 끈 사용자에겐 요청 안 함
   o.adBoardRemote = null;
+  o.adBoardImg = null;      // 전광판 그림 (D76) — 우리 서버 /board.png 만
   o.fetchConfig = async () => {
     const r = await request('/config', 'GET', null, { timeout: 8000, retries: 1 });
     const t = typeof r?.adBoard === 'string' ? r.adBoard.slice(0, 12) : '';
     o.adBoardRemote = t || null;
+    if (r?.adBoardImage > 0) {
+      const img = new Image();
+      img.onload = () => { o.adBoardImg = img; };
+      img.src = `${base()}/board.png?v=${r.adBoardImage}`;
+    } else o.adBoardImg = null;
   };
   o.ensureIdentity = async () => {
     o.fetchConfig();
@@ -113,10 +121,26 @@ export function makeOnline(L) {
   };
 
   o.prefetchSeed = async () => {
-    if (!o.identityId) return;
+    if (!o.identityId || o.prefetchingSeed) return;
+    o.prefetchingSeed = true;
+    o.nextSeedAt = Date.now();
     const r = await request('/sessions', 'POST',
       { identityId: o.identityId, difficulty: 'NORMAL' });
-    if (r && r.sessionId && r.seed) o.nextSeed = { id: r.sessionId, seed: r.seed };
+    o.prefetchingSeed = false;
+    if (r && r.sessionId && r.seed) { o.nextSeed = { id: r.sessionId, seed: r.seed }; o.nextSeedAt = Date.now(); }
+  };
+  // D79: 30분 넘게 묵은 시드(서버 만료 24h)·없는 시드(1분 뒤)는 다시 받는다 — main.swift 동일
+  o.refreshSeedIfStale = () => {
+    if (!o.identityId || o.prefetchingSeed) return;
+    const age = Date.now() - o.nextSeedAt;
+    if (age > (o.nextSeed ? 30 * 60_000 : 60_000)) o.prefetchSeed();
+  };
+  // 레이스용 시드를 꺼내고 다음 것을 미리 받는다. 20시간 넘은 시드는 없는 것으로 (→ 로컬)
+  o.takeSeed = () => {
+    const ns = o.nextSeed;
+    const fresh = ns && Date.now() - o.nextSeedAt < 20 * 3600_000;
+    o.nextSeed = null; o.prefetchSeed();
+    return fresh ? ns : null;
   };
 
   o.submit = async ({ sessionId, offsets, homeruns, maxDistance, maxCombo, totalAtBats, durationMs }) => {
@@ -124,7 +148,7 @@ export function makeOnline(L) {
       atBats: offsets.map((offsetMs) => ({ offsetMs })),
       summary: { homeruns, maxDistance, maxCombo, totalAtBats },
       durationMs,
-    });
+    }, { timeout: 8000, retries: 2 });   // D79: 서버가 멱등이라 재시도 안전
     if (!r) return L('서버에 연결하지 못함 — 로컬 기록만', 'Could not reach server — local record only');
     if (typeof r.rank === 'number') return L(`온라인 등재 — 홈런 보드 ${r.rank}위`, `Listed online — #${r.rank} on the HR board`);
     if (r.verified === false) return L('기록 미등재 — 검증을 통과하지 못했습니다', 'Not listed — failed verification');

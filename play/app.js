@@ -209,15 +209,13 @@ function finishOnboard() {
 // ═══ 레이스 (main.swift Game 레이스 부분) ═══
 function startSession() {
   // 서버 시드가 준비돼 있으면 온라인 세션, 아니면 로컬 (NFR-3.1/3.9)
-  if (online.nextSeed) {
-    game.session = new SessionState(online.nextSeed.seed, DIFF);
-    game.remoteSessionId = online.nextSeed.id;
-    online.nextSeed = null;
-    online.prefetchSeed();
+  const ns = online.takeSeed();
+  if (ns) {
+    game.session = new SessionState(ns.seed, DIFF);
+    game.remoteSessionId = ns.id;
   } else {
     game.session = new SessionState(newSeed(), DIFF);
     game.remoteSessionId = null;
-    online.prefetchSeed();
   }
   game.sessionStartAt = performance.now();
   game.onlineStatus = '';
@@ -268,7 +266,7 @@ function resolveRace(offset) {
   game.resolveUntil = performance.now() + 1300;   // 맥과 동일 (1500 이었던 건 오기)
 }
 // 저장 **전**의 개인 최고를 돌려준다 — 신기록 판정 기준 (맥 saveRaceRecord)
-function saveRaceRecord(hr, dist) {
+function saveRaceRecord(hr, dist, combo) {
   const prev = {
     bestHR: +(localStorage.getItem('bestHR') ?? 0),
     bestDist: +(localStorage.getItem('bestDist') ?? 0),
@@ -277,6 +275,9 @@ function saveRaceRecord(hr, dist) {
   localStorage.setItem('bestDist', Math.max(prev.bestDist, dist));
   const lifeAdd = (k, v) => localStorage.setItem(k, +(localStorage.getItem(k) ?? 0) + v);
   lifeAdd('lifeSessions', 1); lifeAdd('lifeHR', hr);
+  // 맥 lifeMax 와 동일 — 예전엔 빠져 있어 나의 기록의 '최다 연속'이 늘 0 이었다
+  const lifeMax = (k, v) => { if (v > +(localStorage.getItem(k) ?? 0)) localStorage.setItem(k, v); };
+  lifeMax('lifeBestDist', dist); lifeMax('lifeBestCombo', combo);
   return prev;
 }
 function raceTick(now) {
@@ -292,7 +293,7 @@ function raceTick(now) {
       if (game.session.ended) {
         game.phase = 'ended';
         const sum = game.session.summary();
-        const prev = saveRaceRecord(sum.homeruns, sum.maxDistance);
+        const prev = saveRaceRecord(sum.homeruns, sum.maxDistance, sum.maxCombo);
         game.racePrevBestHR = prev.bestHR;
         game.racePrevBestDist = prev.bestDist;
         game.raceNewHigh = sum.homeruns > prev.bestHR;
@@ -492,7 +493,8 @@ const smallFont = mono(9), hudFont = mono(12, 500);
 
 let scale = 1;
 function fitCanvas() {
-  scale = Math.min(innerWidth / W, (innerHeight - 40) / H, 2.2);
+  // 창이 극단적으로 작아도 배율이 0 이하로 떨어지면 안 된다 (음수 배율 → 좌표·히트 전부 깨짐, 실측)
+  scale = Math.max(0.3, Math.min(innerWidth / W, (innerHeight - 40) / H, 2.2));
   const dpr = devicePixelRatio || 1;
   canvas.width = Math.round(W * scale * dpr);
   canvas.height = Math.round(H * scale * dpr);
@@ -595,7 +597,8 @@ function draw(now) {
   const hitX = batX + 34, hitY = g - 35;
   const pitX = W * 0.40;
   const fieldEnd = W * 0.96;
-  const x_of = (m) => hitX + (m / 155) * (fieldEnd - hitX);
+  // D78: 비거리 상한 없음 — 그림은 155m 까지만 (main.swift 와 동일)
+  const x_of = (m) => hitX + (Math.min(m, 155) / 155) * (fieldEnd - hitX);
   const tickColor = ink(0.45);
   const inMenus = ['home', 'matchMenu', 'matchSetup', 'settings'].includes(game.screen);
   const vcfg = game.mode === 'duel' ? duel.dCfg() : cfg;
@@ -623,6 +626,16 @@ function draw(now) {
     ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
     ctx.beginPath(); ctx.arc(h.x + 12, h.y + 12, 12, 0, 7); ctx.stroke();
     text('?', h.x + 12, h.y + 5, mono(14, 700), ink(0.7), 'center');
+    // ↻ 처음부터 다시 (D77) — 원호 + 화살촉
+    const rs = { x: W - 94, y: 10, w: 24, h: 24 };
+    reg(rs, 'restart');
+    ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
+    ctx.beginPath(); ctx.arc(rs.x + 12, rs.y + 12, 12, 0, 7); ctx.stroke();
+    ctx.strokeStyle = ink(0.7); ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.arc(rs.x + 12, rs.y + 12, 6, -Math.PI * 0.35, Math.PI * 1.25); ctx.stroke();
+    const tx = rs.x + 12 + 6 * Math.cos(-Math.PI * 0.35), ty = rs.y + 12 + 6 * Math.sin(-Math.PI * 0.35);
+    ctx.fillStyle = ink(0.7);
+    ctx.beginPath(); ctx.moveTo(tx + 2.5, ty - 2.5); ctx.lineTo(tx - 3.5, ty - 1.5); ctx.lineTo(tx + 0.5, ty + 3.5); ctx.closePath(); ctx.fill();
   }
 
   // ═══ 전용 화면들 — 맥처럼 필드 없이 (지면·담장을 그리기 전에 돌아간다) ═══
@@ -682,8 +695,15 @@ function draw(now) {
     ctx.strokeStyle = ink(0.3); ctx.lineWidth = 1.2;
     ctx.strokeRect(br.x, br.y, br.w, br.h);
     const board = online.adBoardRemote ?? '별별야구';
-    if (textW(board, mono(15, 700)) < br.w - 8)
+    if (online.adBoardImg) {
+      // 그림 전광판 (D76) — 판 안쪽에 비율 유지
+      const img = online.adBoardImg, iw = br.w - 10, ih = br.h - 10;
+      const s = Math.min(iw / img.width, ih / img.height);
+      const w = img.width * s, h = img.height * s;
+      ctx.drawImage(img, br.x + br.w / 2 - w / 2, br.y + br.h / 2 - h / 2, w, h);
+    } else if (textW(board, mono(15, 700)) < br.w - 8) {
       text(board, br.x + br.w / 2, br.y + br.h / 2 - 8, mono(15, 700), ink(0.45), 'center');
+    }
   }
   ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.2;
   ctx.beginPath();
@@ -844,7 +864,7 @@ function drawFly(hudY, g, hitX, hitY, x_of, now) {
   }
   const t = Math.min(1, (now - fly.at) / 900);
   const lx = x_of(fly.dist);
-  const apex = Math.min(hitY - 8, g - 40 - (fly.dist / 155) * (g - 34));
+  const apex = Math.min(hitY - 8, g - 40 - (Math.min(fly.dist, 155) / 155) * (g - 34));
   const endY = fly.kind === 'hr' ? Math.max(hudY + 40, apex * 0.55 + hudY * 0.3) : g;
   ctx.strokeStyle = ink(0.45); ctx.lineWidth = 1.25;
   ctx.beginPath();
@@ -1406,6 +1426,7 @@ function drawHelp() {
     ['P / R / Esc', L('일시정지(투구 중 제외) · 다시 하기 · 나가기', 'Pause (not mid-pitch) · restart · leave')],
   ] : [
     ['Space', L('공에 타이밍을 맞춰 스윙', 'Swing in time with the pitch')],
+    ['↻ / R', L('처음부터 다시', 'Start over')],
     ['Esc', L('홈으로', 'Home')],
     ['', ''],
     ['', L('공의 궤적을 보고 타이밍을 잡는다.', "Time your swing off the ball's flight.")],
@@ -1556,13 +1577,16 @@ addEventListener('keydown', (e) => {
 });
 
 canvas.addEventListener('pointerdown', (e) => {
-  const px = e.offsetX / scale, py = e.offsetY / scale;
+  // offsetX 는 합성 이벤트·변환된 캔버스에서 어긋난다 — 캔버스 화면 위치 기준으로 직접 계산
+  const cr = canvas.getBoundingClientRect();
+  const px = (e.clientX - cr.left) / scale, py = (e.clientY - cr.top) / scale;
   if (game.helpOpen) { closeHelp(); return; }
   const hitR = regions.slice().reverse().find(
     (r) => px >= r.x - 6 && px <= r.x + r.w + 6 && py >= r.y - 6 && py <= r.y + r.h + 6);
   if (hitR) {
     const a = hitR.action;
     if (a === 'helpToggle') { openHelp(); return; }
+    if (a === 'restart') { if (game.screen === 'race') startSession(); else startDuel(); return; }
     if (a === 'pauseToggle') {
       if (game.canPause || game.paused) togglePause();
       else if (game.phase === 'pitching') game.judgeText = L('투구 중에는 멈출 수 없습니다', "Can't pause during a pitch");
@@ -1630,6 +1654,7 @@ updateChrome();
 
 // ═══ 프레임 루프 ═══
 function tick(now) {
+  online.refreshSeedIfStale();   // D79
   // helpOpen 은 틱을 막지 않는다 — 투구 중에 안내를 열면 그 공은 그냥 날아간다
   // (맥과 같은 규칙. canPause 가 막아서 시간을 벌 수 없다)
   if (game.paused) return;
@@ -1648,4 +1673,5 @@ requestAnimationFrame(frame);
 
 // 디버그/자동화 훅 — 상태 점검용 (게임 조작은 입력 경로로만)
 window.__bb = { game, duel, online, startSession, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
+                get regions() { return regions; }, get scale() { return scale; },
                 get summary() { return game.session.summary(); } };

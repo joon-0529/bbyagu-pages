@@ -23,9 +23,7 @@
 // ─────────────────────────────────────────────────────────────────
 export const K = {
     /** 비거리 기본치(m) */ BASE_DISTANCE: 105,
-    /** 비거리 상한(m) */ MAX_DISTANCE: 155,
     /** 난수 편차 ±(m) */ NOISE: 4.0,
-    /** 콤보 보너스 상한 */ COMBO_CAP: 0.15,
     /** 콤보 1회당 보너스 */ COMBO_STEP: 0.01,
     /** FOUL/PASS 연속 허용 횟수 */ FREE_LIMIT: 2,
     /** 클래식 아웃 수 (v0.4 D3) */ CLASSIC_OUTS: 10,
@@ -34,6 +32,9 @@ export const K = {
     /** v0.5 D29 — 진행 난이도: 홈런 1개당 구속 증가(km/h) */ HEAT_KMH_STEP: 1,
     /** v0.5 D29 — 진행 난이도 구속 증가 상한(km/h) */ HEAT_KMH_CAP: 20,
 };
+/** 1.1.0 이하 클라이언트가 쓰던 룰 (D80). 서버가 옛 앱의 제출을 그 앱의 룰로
+ *  재현할 때만 쓴다 — 게임 경로에서는 절대 켜지 않는다. Swift 포팅 대상 아님. */
+export const LEGACY_110 = { comboCap: 0.15, maxDistance: 155, heatCap: 20 };
 export const DIFFICULTY = {
     EASY: {
         readyMs: 1800, flightMs: 900, baseSpeed: 130,
@@ -92,7 +93,7 @@ export function seedToU32(seed) {
  *             홈런당 +HEAT_KMH_STEP km/h (상한 HEAT_KMH_CAP) 올라 비행이 짧아진다.
  *             구속 상승분만큼 비거리 계수도 미세하게 올라 보상이 함께 커진다.
  */
-export function pitchFor(seed, index, difficulty, heat = 0) {
+export function pitchFor(seed, index, difficulty, heat = 0, heatCap = K.HEAT_KMH_CAP) {
     const cfg = DIFFICULTY[difficulty];
     const r = rng32((seedToU32(seed) ^ Math.imul(index + 1, 2654435761)) >>> 0);
     // 구종 선택 — heat 가 오를수록 변화구를 더 자주 던진다.
@@ -107,7 +108,7 @@ export function pitchFor(seed, index, difficulty, heat = 0) {
         type = cfg.pitchTypes[0];
     }
     else {
-        const heatRatio = Math.min(heat * K.HEAT_KMH_STEP, K.HEAT_KMH_CAP) / K.HEAT_KMH_CAP;
+        const heatRatio = Math.min(heat * K.HEAT_KMH_STEP, heatCap) / heatCap;
         const fastShare = Math.max(0.12, 1 / nTypes - heatRatio * 0.18);
         type = roll < fastShare
             ? cfg.pitchTypes[0]
@@ -117,7 +118,7 @@ export function pitchFor(seed, index, difficulty, heat = 0) {
     // jsRound(±∞) 가 트랩이라 프로세스가 죽는다. 게임 경로에서는 heat ≥ 0 이라
     // 도달하지 않지만 pitchFor 는 공개 API 이므로 양쪽 모두 막아 둔다.
     const speed = Math.max(1, Math.round(cfg.baseSpeed + PITCH_SPEED_DELTA[type] + r() * 8
-        + Math.min(heat * K.HEAT_KMH_STEP, K.HEAT_KMH_CAP)));
+        + Math.min(heat * K.HEAT_KMH_STEP, heatCap)));
     const flightMs = Math.round(cfg.flightMs * (cfg.baseSpeed / speed));
     const course = cfg.courseGrid === 1 ? 4 // 한가운데
         : cfg.courseGrid === 3 ? 1 + Math.floor(r() * 3) * 3 // 상하 3단
@@ -168,18 +169,20 @@ export function timingFactor(absOffsetMs, th) {
 /** v0.4 D2 — 난이도 기준 구속 대비 상대값. 구종 편차 ±22km/h → 비거리 ±4.5%.
  *  절대 기준(130) 방식은 느린 변화구에서 PERFECT 조차 아웃되게 만들었다. */
 export const speedFactor = (speedKmh, baseSpeed) => round3(1 + (speedKmh - baseSpeed) / 500);
-export const comboBonus = (combo) => round3(1.0 + Math.min(combo * K.COMBO_STEP, K.COMBO_CAP));
-/** §4.3 최종 산출식. 정수 미터로 반올림·클램프한다.
+/** D80: 상한 없음 — 연속 홈런 1개당 +1% 가 끝없이 쌓인다 (예전 상한 0.15) */
+export const comboBonus = (combo, cap = Infinity) => round3(1.0 + Math.min(combo * K.COMBO_STEP, cap));
+/** §4.3 최종 산출식. 정수 미터로 반올림한다 (D78: 상한 없음 — 155m 클램프 제거).
  *  주의: PERFECT 의 기준선 하한 보정(D1)은 여기가 아니라 resolveAtBat 에서 한다. */
-export function distanceOf(offsetMs, pitch, combo, cfg) {
+export function distanceOf(offsetMs, pitch, combo, cfg, legacy = false) {
     if (offsetMs === null)
         return 0;
     const tf = timingFactor(Math.abs(offsetMs), cfg.thresholds);
     if (tf === 0)
         return 0;
     const d = K.BASE_DISTANCE * tf * speedFactor(pitch.speed, cfg.baseSpeed)
-        * comboBonus(combo) + pitch.noise;
-    return Math.max(0, Math.min(K.MAX_DISTANCE, Math.round(d)));
+        * comboBonus(combo, legacy ? LEGACY_110.comboCap : Infinity) + pitch.noise;
+    const m = Math.max(0, Math.round(d));
+    return legacy ? Math.min(LEGACY_110.maxDistance, m) : m;
 }
 // ─────────────────────────────────────────────────────────────────
 // §4.4 — 결과 판정
@@ -202,7 +205,7 @@ export const FREE_RESULTS = new Set(['PASS']);
 export function resolveAtBat(input) {
     const cfg = DIFFICULTY[input.difficulty];
     const judgement = judge(input.offsetMs, cfg.thresholds);
-    let distance = distanceOf(input.offsetMs, input.pitch, input.combo, cfg);
+    let distance = distanceOf(input.offsetMs, input.pitch, input.combo, cfg, input.legacy === true);
     if (judgement === 'PERFECT')
         distance = Math.max(distance, cfg.homerunLine); // D1 하한
     const result = resultOf(judgement, distance, cfg.homerunLine);
@@ -214,10 +217,13 @@ export function resolveAtBat(input) {
     };
 }
 export class SessionState {
-    constructor(seed, difficulty, maxOuts = K.CLASSIC_OUTS) {
+    constructor(seed, difficulty, maxOuts = K.CLASSIC_OUTS, 
+    /** 서버 전용 — 1.1.0 이하 클라이언트의 제출을 그 룰로 재현 (D80) */
+    legacy = false) {
         this.seed = seed;
         this.difficulty = difficulty;
         this.maxOuts = maxOuts;
+        this.legacy = legacy;
         this.outs = 0;
         this.combo = 0;
         this.freeRun = 0;
@@ -235,13 +241,16 @@ export class SessionState {
     get currentOuts() { return this.outs; }
     /** v0.5 D29 — 현재 홈런 수가 heat 로 들어가 칠수록 공이 빨라진다.
      *  리플레이도 같은 순서로 홈런이 쌓이므로 결정론이 유지된다. */
-    nextPitch() { return pitchFor(this.seed, this.atBats, this.difficulty, this.hr); }
+    nextPitch() {
+        return pitchFor(this.seed, this.atBats, this.difficulty, this.hr, this.legacy ? LEGACY_110.heatCap : K.HEAT_KMH_CAP);
+    }
     /** 스윙 하나를 적용하고 결과를 돌려준다. */
     swing(offsetMs, pitch) {
         if (this.ended)
             throw new Error('SESSION_ENDED');
         const p = pitch ?? this.nextPitch();
-        const out = resolveAtBat({ offsetMs, pitch: p, combo: this.combo, difficulty: this.difficulty });
+        const out = resolveAtBat({ offsetMs, pitch: p, combo: this.combo, difficulty: this.difficulty,
+            legacy: this.legacy });
         if (offsetMs !== null && out.judgement !== 'NONE') {
             this.jd[out.judgement]++;
             this.errors.push(Math.abs(offsetMs));
