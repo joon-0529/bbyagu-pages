@@ -332,7 +332,11 @@ export function makeDuel(game, L, KOref) {
     // 결승타 후보 — 이 타격으로 리드를 잡았으면 기록 (마지막 것이 남는다)
     const batAfter = mine ? myTotal() : botTotal();
     const fldAfter = mine ? botTotal() : myTotal();
-    if (mine && batAfter > batBefore) d.cheerAt = performance.now();   // 내 득점 축포 (D72)
+    if (mine && batAfter > batBefore) {   // 내 득점 축포 (D72) — 담장 넘은 뒤 (D84)
+      const line = dCfg().homerunLine;
+      const delay = kind === 'hr' ? (900 * line) / Math.min(Math.max(dist, line), 155) : (dist > 0 ? 900 : 0);
+      d.cheerAt = performance.now() + delay;
+    }
     if (batBefore <= fldBefore && batAfter > fldAfter && playLabel) {
       const desc = KO ? `${Math.min(d.dInn, d.dInnT)}회${d.halfTop ? '초' : '말'} ${playLabel}`
                       : `${d.halfTop ? 'Top' : 'Bot'} ${Math.min(d.dInn, d.dInnT)} ${playLabel}`;

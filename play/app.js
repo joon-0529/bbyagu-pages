@@ -269,7 +269,7 @@ function resolveRace(offset) {
   game.fly = (dist > 0 && out.result !== 'STRIKEOUT')
     ? { at: performance.now(), dist, kind: out.result === 'HOMERUN' ? 'hr' : 'fly' }
     : null;
-  if (out.result === 'HOMERUN') game.cheerAt = performance.now();
+  if (out.result === 'HOMERUN') game.cheerAt = performance.now() + cheerDelay(dist, true, cfg.homerunLine);   // 담장 넘은 뒤 (D84)
   game.phase = 'resolving';
   game.resolveUntil = performance.now() + 1300;   // 맥과 동일 (1500 이었던 건 오기)
 }
@@ -430,6 +430,10 @@ game.onMatchResult = (myRuns, botRuns) => {
 
 // ═══ 포즈 (main.swift batterPose/pitcherPose 포팅) ═══
 const SWING_MS = 150;
+// D84 — 축포는 공이 담장을 넘는 순간부터. 타구 애니메이션 900ms 에서 담장 통과 시각 역산 (맥 cheerDelay)
+export function cheerDelay(dist, hr, line) {
+  return hr ? (900 * line) / Math.min(Math.max(dist, line), 155) : (dist > 0 ? 900 : 0);
+}
 const easeOut = (t) => 1 - (1 - t) * (1 - t);
 const easeIn = (t) => t * t;
 
