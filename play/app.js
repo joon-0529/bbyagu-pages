@@ -1327,7 +1327,11 @@ function drawLeaderboard() {
   reg({ x: W * 0.30, y: 0, w: W * 0.40, h: 44 }, 'lbNext');
   if (page.hasChaos) reg({ x: W * 0.70, y: 0, w: W * 0.30, h: 44 }, 'lbChaos');
 
-  if (!game.lbMore && entries && entries.length > 10) {
+  // 4위 이하 목록 용량 — 창 크기에서 유도 (열 폭 200 기준 최대 3열). 맥과 동일
+  const listTop = 186, listBottom = H - 34;
+  const listRows = Math.max(0, Math.floor((listBottom - listTop) / 14));
+  const listCols = Math.max(1, Math.min(3, Math.floor((W - 80) / 200)));
+  if (!game.lbMore && entries && entries.length > 3 + listRows * listCols) {
     ctx.strokeStyle = ink(0.4); ctx.lineWidth = 1;
     roundedRect(W - 110, 40, 86, 20, 5); ctx.stroke();
     reg({ x: W - 110, y: 40, w: 86, h: 20 }, 'lbMore');
@@ -1390,23 +1394,22 @@ function drawLeaderboard() {
     text(score(e), px, base - h - 22, mono(idx === 0 ? 15 : 12, 700), ink(0.92), 'center');
     text(nick(e), px, base - h - 37, smallFont, ink(0.6), 'center');
   }
-  // 4~10위 — 두 열
-  const twoCols = W >= 620;
-  const listTop = 186, listBottom = H - 34;
-  const listRows = Math.max(0, Math.floor((listBottom - listTop) / 14));
-  const shown = entries.slice(3, 3 + (twoCols ? Math.min(7, listRows * 2) : Math.min(4, listRows)));
+  // 4위 이하 — 열·행을 창 크기에서 유도 (사용자 요청 9/8: 화면이 남으면 10명 넘게 옆으로)
+  const colW = (W - 80) / listCols;
+  const shown = entries.slice(3, 3 + listRows * listCols);
   shown.forEach((e, i) => {
-    const col = twoCols && i >= listRows;
-    const x = col ? W / 2 + 40 : 70;
-    const yy = listTop + (col ? i - listRows : i) * 14;
+    const col = Math.floor(i / Math.max(1, listRows)), row = i % Math.max(1, listRows);
+    const x = 40 + col * colW, yy = listTop + row * 14;
     if (yy + 12 > listBottom) return;
-    text(`${e.rank ?? 0}. ${nick(e)}`, x, yy, smallFont, ink(0.7));
-    text(score(e), Math.min(x + 190, (col ? W : W / 2) - 56), yy, smallFont, ink(0.7));
+    let label = `${e.rank ?? 0}. ${nick(e)}`;
+    while (textW(label, smallFont) > colW - 64 && label.length > 4) label = label.slice(0, -2) + '…';
+    text(label, x, yy, smallFont, ink(0.7));
+    text(score(e), x + colW - 58, yy, smallFont, ink(0.7));
   });
-  const hidden = Math.max(0, Math.min(entries.length, 10) - 3 - shown.length);
+  const hidden = Math.max(0, entries.length - 3 - shown.length);
   const cTip = page.hasChaos ? L(' · C 궤적', ' · C physics') : '';
   text(hidden > 0
-    ? L(`◂ ▸ 항목 이동 · M 더보기(4위 이하 ${hidden}명 포함)${cTip} · Esc 홈`, `◂ ▸ boards · M more (+${hidden} below top 3)${cTip} · Esc home`)
+    ? L(`◂ ▸ 항목 이동 · M 더보기(그 아래 ${hidden}명)${cTip} · Esc 홈`, `◂ ▸ boards · M more (+${hidden} more)${cTip} · Esc home`)
     : L(`◂ ▸ 항목 이동 · M 더보기${cTip} · Esc 홈`, `◂ ▸ boards · M more${cTip} · Esc home`),
     24, H - 22, smallFont, ink(0.45));
 }
