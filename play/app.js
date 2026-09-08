@@ -74,8 +74,11 @@ const online = makeOnline(L);
 const pvp = makePvp(game, duel, online, L, { shortDisplay, leaveToHome });
 if (game.screen === 'home') online.ensureIdentity();
 { // 링크 진입 (D87): ?room=CODE — 주소는 지워서 새로고침 때 다시 참가하지 않게
-  const code = (new URLSearchParams(location.search).get('room') ?? '').toUpperCase();
-  if (/^[A-Z2-9]{4}$/.test(code)) { game.pendingRoomCode = code; history.replaceState(null, '', location.pathname); }
+  const q = new URLSearchParams(location.search);
+  const code = (q.get('room') ?? '').toUpperCase(), ch = (q.get('challenge') ?? '').toUpperCase();
+  if (/^[A-Z2-9]{4}$/.test(code)) game.pendingRoomCode = code;
+  if (/^[A-Z2-9]{6}$/.test(ch)) game.pendingChallengeCode = ch;   // D89
+  if (code || ch) history.replaceState(null, '', location.pathname);
 }
 
 // ── 리더보드 페이지 정의 (main.swift lbPages) ──
@@ -220,6 +223,8 @@ function finishOnboard() {
 
 // ═══ 레이스 (main.swift Game 레이스 부분) ═══
 function startSession() {
+  if (game.challengeLoading) return;
+  game.challenge = null; game.challengeBeat = null; online.lastChallengeCode = null;
   // 서버 시드가 준비돼 있으면 온라인 세션, 아니면 로컬 (NFR-3.1/3.9)
   const ns = online.takeSeed();
   if (ns) {
@@ -229,6 +234,29 @@ function startSession() {
     game.session = new SessionState(newSeed(), DIFF);
     game.remoteSessionId = null;
   }
+  beginRace();
+}
+// D89 — 도전 링크로 시작: 서버에서 같은 시드 세션을 받아 온다 (보드 제외)
+async function startChallenge(code) {
+  if (game.challengeLoading) return;
+  game.screen = 'race'; game.mode = 'race'; game.phase = 'idle';
+  if (!online.enabled() || !online.identityId) {
+    game.judgeText = L(`도전 ${code} — 온라인 참여를 켜야 합니다 (설정)`, `Challenge ${code} — enable online play in Settings`); return;
+  }
+  game.challengeLoading = true;
+  game.judgeText = L('도전 불러오는 중…', 'Loading challenge…');
+  const r = await online.challengeSession(code);
+  game.challengeLoading = false;
+  if (!r) { game.judgeText = L('도전을 찾을 수 없습니다 — 링크를 확인하세요', 'Challenge not found — check the link'); return; }
+  if (game.screen !== 'race' || game.phase !== 'idle') return;   // 기다리다 떠났다
+  localStorage.removeItem('savedRace');
+  game.session = new SessionState(r.seed, DIFF);
+  game.remoteSessionId = r.id;
+  game.challenge = { code, display: shortDisplay(r.display, 8), hr: r.hr, dist: r.dist };
+  game.challengeBeat = null; online.lastChallengeCode = null;
+  beginRace();
+}
+function beginRace() {
   game.sessionStartAt = performance.now();
   game.onlineStatus = '';
   game.raceOffsets = [];
@@ -319,7 +347,10 @@ function raceTick(now) {
             homeruns: sum.homeruns, maxDistance: sum.maxDistance,
             maxCombo: sum.maxCombo, totalAtBats: sum.totalAtBats,
             durationMs: Math.round(performance.now() - game.sessionStartAt),
-          }).then((msg) => { game.onlineStatus = msg; });
+          }).then((msg) => {
+            game.onlineStatus = msg;
+            if (online.lastChallengeResult) game.challengeBeat = online.lastChallengeResult.beat === true;   // D89
+          });
         } else {
           game.onlineStatus = L('오프라인 세션 — 로컬 기록만', 'Offline session — local record only');
         }
@@ -390,8 +421,10 @@ function enterPvpMenu() {
 function resultShareText() {
   if (game.mode === 'race') {
     const sm = game.session.summary();
-    return L(`별별야구 홈런레이스 ${sm.homeruns}홈런 · 최고 ${sm.maxDistance}m\n${SHARE_BASE}`,
-             `BB Baseball Home Run Race — ${sm.homeruns} HR · longest ${sm.maxDistance}m\n${SHARE_BASE}`);
+    const ch = online.lastChallengeCode
+      ? L(`\n같은 공으로 도전: ${SHARE_BASE}?challenge=${online.lastChallengeCode}`, `\nBeat my pitches: ${SHARE_BASE}?challenge=${online.lastChallengeCode}`) : '';
+    return L(`별별야구 홈런레이스 ${sm.homeruns}홈런 · 최고 ${sm.maxDistance}m\n${SHARE_BASE}${ch}`,
+             `BB Baseball Home Run Race — ${sm.homeruns} HR · longest ${sm.maxDistance}m\n${SHARE_BASE}${ch}`);
   }
   const my = duel.myTotal(), opp = duel.botTotal();
   const who = game.pvp ? game.oppNick : L('봇', 'the bot');
@@ -827,10 +860,11 @@ function draw(now) {
     }
   } else {
     const lines =
-      game.phase === 'idle' ? [L('Space 를 눌러 시작', 'Press Space to start'), '']
+      game.phase === 'idle' ? [(game.challengeLoading || game.judgeText.startsWith(L('도전', 'Challenge'))) ? game.judgeText : L('Space 를 눌러 시작', 'Press Space to start'), '']
       : game.phase === 'ended' ? ['', '']
       : [L(`홈런 ${sum.homeruns}   연속 ${game.session.currentCombo}   최고 ${sum.maxDistance}m   아웃 ${sum.outs}/${game.session.maxOuts}`,
-           `HR ${sum.homeruns}   Streak ${game.session.currentCombo}   Best ${sum.maxDistance}m   Outs ${sum.outs}/${game.session.maxOuts}`),
+           `HR ${sum.homeruns}   Streak ${game.session.currentCombo}   Best ${sum.maxDistance}m   Outs ${sum.outs}/${game.session.maxOuts}`)
+         + (game.challenge ? L(`   도전 ${game.challenge.display} ${game.challenge.hr}홈런`, `   vs ${game.challenge.display} ${game.challenge.hr} HR`) : ''),
          game.judgeText];
     lines.forEach((line, i) => {
       if (line) text(line, 18, hudY + i * 19, hudFont, ink(0.9));
@@ -1221,6 +1255,13 @@ function drawRaceOver(sum, now) {
     c(L('개인 최고', 'Personal best'), 148, smallFont, ink(0.5 * appear));
     c(L(`${bestHR}홈런 · ${bestDist}m`, `${bestHR} HR · ${bestDist}m`),
       164, mono(16, 600), ink(0.75 * appear));
+  }
+  if (game.challenge) {   // D89 — 도전 비교 (서버 판정이 오면 그것, 아직이면 로컬 비교)
+    const ch = game.challenge;
+    const beat = game.challengeBeat ?? (sum.homeruns > ch.hr || (sum.homeruns === ch.hr && sum.maxDistance > ch.dist));
+    c(L(`도전 ${ch.display} ${ch.hr}홈런 · ${ch.dist}m — ${beat ? '이겼다!' : '졌다'}`,
+        `Challenge ${ch.display} ${ch.hr} HR · ${ch.dist}m — ${beat ? 'you won!' : 'you lost'}`),
+      188, mono(13, 700), beat ? ORANGE() + `${appear})` : ink(0.6 * appear));
   }
   const tail = L(`최고 비거리 ${sum.maxDistance}m · 타석 ${sum.totalAtBats}`,
                  `Longest ${sum.maxDistance}m · At-bats ${sum.totalAtBats}`)
@@ -1880,14 +1921,16 @@ updateChrome();
 // ═══ 프레임 루프 ═══
 // 링크(`?room=CODE`)로 받은 방 코드를 메뉴에서 소비 (D87) — 플레이 중이면 메뉴로 돌아왔을 때
 function consumePendingLink() {
-  if (!game.pendingRoomCode || !['home', 'matchMenu', 'pvpMenu', 'matchSetup'].includes(game.screen)) return;
+  if (!['home', 'matchMenu', 'pvpMenu', 'matchSetup'].includes(game.screen)) return;
+  if (game.pendingChallengeCode) { const c = game.pendingChallengeCode; game.pendingChallengeCode = null; startChallenge(c); return; }   // D89
+  if (!game.pendingRoomCode) return;
   const code = game.pendingRoomCode; game.pendingRoomCode = null;
   enterPvpMenu(); game.pvpSel = 1;
   if (online.enabled()) pvp.joinRoom(code);
   else game.pvpStatus = L(`링크의 방 ${code} — 설정에서 온라인 참여를 켠 뒤 2 로 참가하세요`, `Room ${code} from link — enable online play in Settings, then press 2 to join`);
 }
 function tick(now) {
-  if (game.pendingRoomCode) consumePendingLink();
+  if (game.pendingRoomCode || game.pendingChallengeCode) consumePendingLink();
   online.refreshSeedIfStale();   // D79
   if (game.pvp) pvp.processEvents(now);   // 일시정지 여부와 무관 — 상대 이벤트는 항상 소비
   // helpOpen 은 틱을 막지 않는다 — 투구 중에 안내를 열면 그 공은 그냥 날아간다
@@ -1907,6 +1950,6 @@ function frame(t) {
 requestAnimationFrame(frame);
 
 // 디버그/자동화 훅 — 상태 점검용 (게임 조작은 입력 경로로만)
-window.__bb = { game, duel, online, pvp, startSession, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
+window.__bb = { game, duel, online, pvp, startSession, startChallenge, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
                 get regions() { return regions; }, get scale() { return scale; },
                 get summary() { return game.session.summary(); } };

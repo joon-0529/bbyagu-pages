@@ -144,14 +144,19 @@ export function makeOnline(L) {
   };
 
   o.submit = async ({ sessionId, offsets, homeruns, maxDistance, maxCombo, totalAtBats, durationMs }) => {
+    o.lastChallengeCode = null;
     const r = await request(`/sessions/${sessionId}/submit`, 'POST', {
       atBats: offsets.map((offsetMs) => ({ offsetMs })),
       summary: { homeruns, maxDistance, maxCombo, totalAtBats },
       durationMs,
     }, { timeout: 8000, retries: 2 });   // D79: 서버가 멱등이라 재시도 안전
     if (!r) return L('서버에 연결하지 못함 — 로컬 기록만', 'Could not reach server — local record only');
+    const verified = r.verified !== false;
+    if (verified && !r.challenge) o.createChallenge(sessionId, homeruns, maxDistance);   // D89 공유 문구용
+    o.lastChallengeResult = r.challenge ?? null;
+    if (r.challenge) return verified ? L('도전 결과 기록됨', 'Challenge result recorded') : L('기록 미등재 — 검증을 통과하지 못했습니다', 'Not listed — failed verification');
     if (typeof r.rank === 'number') return L(`온라인 등재 — 홈런 보드 ${r.rank}위`, `Listed online — #${r.rank} on the HR board`);
-    if (r.verified === false) return L('기록 미등재 — 검증을 통과하지 못했습니다', 'Not listed — failed verification');
+    if (!verified) return L('기록 미등재 — 검증을 통과하지 못했습니다', 'Not listed — failed verification');
     return L('온라인 제출됨 — 순위권 밖', 'Submitted — outside the rankings');
   };
 
@@ -194,6 +199,20 @@ export function makeOnline(L) {
              + '백업에 남은 사본은 최대 30일 안에 함께 사라집니다.',
              `Done — ${n} leaderboard entries and your profile were removed from the server. `
              + 'Copies in backups disappear within 30 days.') };
+  };
+
+  // ── 같은 시드 도전 (D89) ──
+  o.lastChallengeCode = null;
+  o.createChallenge = async (sessionId, hr, dist) => {
+    if (!o.identityId) return;
+    const r = await request('/challenges', 'POST', { identityId: o.identityId, sessionId, hr, dist });
+    if (r?.code) o.lastChallengeCode = r.code;
+  };
+  o.challengeSession = async (code) => {
+    if (!o.identityId) return null;
+    const r = await request('/sessions', 'POST', { identityId: o.identityId, challenge: code }, { timeout: 8000, retries: 1 });
+    if (!r?.sessionId || !r.seed || !r.challenge) return null;
+    return { id: r.sessionId, seed: r.seed, display: String(r.challenge.display ?? '?'), hr: r.challenge.hr | 0, dist: r.challenge.dist | 0 };
   };
 
   // ── PvP 방 · 랜덤 매칭 (main.swift Online 의 PvP 부분) ──
