@@ -385,6 +385,42 @@ function enterPvpMenu() {
   game.matchSel = 1; game.pvpStatus = ''; game.pvpSel = 0; game.menuNotice = '';
   game.screen = 'pvpMenu';
 }
+// 종료 기록 카드 공유 (D88) — 캔버스 이미지 + 문구. 공유 시트가 파일을 받으면 그것,
+// 아니면 이미지 다운로드 + 문구 복사
+function resultShareText() {
+  if (game.mode === 'race') {
+    const sm = game.session.summary();
+    return L(`별별야구 홈런레이스 ${sm.homeruns}홈런 · 최고 ${sm.maxDistance}m\n${SHARE_BASE}`,
+             `BB Baseball Home Run Race — ${sm.homeruns} HR · longest ${sm.maxDistance}m\n${SHARE_BASE}`);
+  }
+  const my = duel.myTotal(), opp = duel.botTotal();
+  const who = game.pvp ? game.oppNick : L('봇', 'the bot');
+  const verdict = my > opp ? L('승리', 'win') : my < opp ? L('패배', 'loss') : L('무승부', 'draw');
+  return L(`별별야구 경기 모드 — ${who} 상대 ${my}:${opp} ${verdict}\n${SHARE_BASE}`,
+           `BB Baseball game mode — ${my}:${opp} ${verdict} vs ${who}\n${SHARE_BASE}`);
+}
+async function shareResult() {
+  if (game.phase !== 'ended') return;
+  const text = resultShareText();
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+  const file = blob ? new File([blob], 'bbyagu.png', { type: 'image/png' }) : null;
+  if (file && navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], text }); return; } catch { /* 취소 */ }
+  }
+  try { await navigator.clipboard.writeText(text); game.onlineStatus = L('기록 문구를 복사했습니다', 'Result text copied'); } catch { /* 권한 없음 */ }
+  if (blob) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'bbyagu.png'; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+}
+function drawShareButton() {
+  const r = { x: W - 84, y: H - 44, w: 64, h: 24 };
+  ctx.fillStyle = ink(0.06); roundedRect(r.x, r.y, r.w, r.h, 6); ctx.fill();
+  ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.1; roundedRect(r.x, r.y, r.w, r.h, 6); ctx.stroke();
+  text(L('공유 S', 'Share S'), r.x + r.w / 2, r.y + 6, mono(11, 700), ink(0.85), 'center');
+  reg({ x: r.x - 8, y: r.y - 8, w: r.w + 16, h: r.h + 16 }, 'shareResult');
+}
 // 방 코드 복사·공유 (D87) — 브라우저 공유 시트가 있으면 그것, 없으면 클립보드
 async function shareRoomCode() {
   const text = L(`별별야구 PvP 방 코드 ${game.roomCode}\n링크로 바로 참가: ${SHARE_BASE}?room=${game.roomCode}`,
@@ -1193,6 +1229,7 @@ function drawRaceOver(sum, now) {
   const hint = (game.onlineStatus ? game.onlineStatus + ' · ' : '')
     + L('Space 새 세션 · Esc 홈', 'Space new session · Esc home');
   c(hint, H - 34, smallFont, ink(0.5 * appear));
+  drawShareButton();
 }
 
 function drawDuelOver(now) {
@@ -1258,6 +1295,7 @@ function drawDuelOver(now) {
     hint = (game.onlineStatus ? game.onlineStatus + ' · ' : '') + L('Space 새 경기 · Esc 홈', 'Space new game · Esc home');
   }
   c(hint, hintY, smallFont, ink(0.5 * appear));
+  drawShareButton();
 }
 
 // 매칭 성사 알림 (랭크전 시작 직후) — main.swift drawMatched
@@ -1722,6 +1760,7 @@ addEventListener('keydown', (e) => {
         else swing(e.timeStamp);
       }
       else if (e.code === 'KeyR') startSession();
+      else if (e.code === 'KeyS' && game.phase === 'ended') shareResult();
       else if (e.code === 'KeyP') togglePause();
       else if (e.code === 'Escape') leaveToHome();
       break;
@@ -1744,6 +1783,7 @@ addEventListener('keydown', (e) => {
         if (!game.pvp) startDuel();
         else if (game.phase === 'ended' && !game.ranked) pvp.requestRematch();
       }
+      else if (e.code === 'KeyS' && game.phase === 'ended') shareResult();
       else if (e.code === 'KeyP') togglePause();
       else if (e.code === 'Escape') leaveMatchToHome();
       break;
@@ -1762,6 +1802,7 @@ canvas.addEventListener('pointerdown', (e) => {
     if (a === 'helpToggle') { openHelp(); return; }
     if (a === 'restart') { if (game.screen === 'race') startSession(); else startDuel(); return; }
     if (a === 'rematch') { pvp.requestRematch(); return; }
+    if (a === 'shareResult') { shareResult(); return; }
     if (a === 'pauseToggle') {
       if (game.canPause || game.paused) togglePause();
       else if (game.phase === 'pitching') game.judgeText = L('투구 중에는 멈출 수 없습니다', "Can't pause during a pitch");
