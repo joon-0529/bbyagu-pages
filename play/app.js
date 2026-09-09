@@ -511,7 +511,7 @@ game.onMatchResult = (myRuns, botRuns) => {
 };
 
 // ═══ 포즈 (main.swift batterPose/pitcherPose 포팅) ═══
-const SHARE_BASE = 'https://joon-0529.github.io/bbyagu-pages/play/';   // 공유 링크 기준 (D87)
+const SHARE_BASE = 'https://bbyagu.com/game/play';   // 공유 링크 기준 (D87·D90): 앱이 있으면 앱, 없으면 웹판으로
 const SWING_MS = 150;
 // D84 — 축포는 공이 담장을 넘는 순간부터. 타구 애니메이션 900ms 에서 담장 통과 시각 역산 (맥 cheerDelay)
 export function cheerDelay(dist, hr, line) {
