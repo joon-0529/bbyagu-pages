@@ -48,6 +48,13 @@ export function makePvp(game, duel, online, L, { shortDisplay, leaveToHome }) {
     resetRoomState();
     d.screen = 'pvpLobby';
     startPolling();
+    if (d.pendingInviteFriendId) {   // D91: 친구 초대로 만든 방
+      const fid = d.pendingInviteFriendId; d.pendingInviteFriendId = null;
+      online.inviteFriend(fid, r.code, r.playerId).then((ok) => {
+        d.pvpStatus = ok ? L('친구에게 초대를 보냈습니다 — 참가하면 바로 시작', 'Invite sent — the game starts when they join')
+                         : L('초대 전송 실패', 'Could not send the invite');
+      });
+    }
   };
 
   p.joinRoom = async (code) => {

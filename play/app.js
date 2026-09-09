@@ -61,6 +61,8 @@ const game = {
   oppW: 0, oppL: 0, matchedAt: 0, lastSeq: 0, pendingEvents: [], pollActive: false,
   oppAlive: true, pvpStatus: '', rematchMine: false, rematchOpp: false,
   pollGen: 0, pollFails: 0, ranked: false, matchTicket: null, matchmakeStartAt: 0, pvpSel: 0,
+  // ── 친구 (D91) ──
+  friends: [], invites: [], friendSel: 0, friendsStatus: '', friendsPollAt: 0, pendingInviteFriendId: null,
   get canPause() {
     if (this.paused) return true;
     if (this.pvp) return false;               // 상대가 기다린다 — PvP 는 멈출 수 없다
@@ -714,7 +716,7 @@ function draw(now) {
   // D78: 비거리 상한 없음 — 그림은 155m 까지만 (main.swift 와 동일)
   const x_of = (m) => hitX + (Math.min(m, 155) / 155) * (fieldEnd - hitX);
   const tickColor = ink(0.45);
-  const inMenus = ['home', 'matchMenu', 'matchSetup', 'pvpMenu', 'pvpLobby', 'settings'].includes(game.screen);
+  const inMenus = ['home', 'matchMenu', 'matchSetup', 'pvpMenu', 'pvpLobby', 'friends', 'settings'].includes(game.screen);
   const vcfg = game.mode === 'duel' ? duel.dCfg() : cfg;
 
   // ── 일시정지 + ? 버튼 (레이스·경기 진행 중에만) ──
@@ -1026,6 +1028,7 @@ function drawMenus(hudY, g, now) {
         [L('4  나의 기록', '4  My stats'), game.homeSel === 3],
         [L('5  설정 — 닉네임·온라인 참여·약관', '5  Settings — nickname · online · terms'), game.homeSel === 4],
       ];
+      if (game.invites[0]) rows.push([L(`🎮 ${game.invites[0].from} 님의 초대 — 방 ${game.invites[0].code} · J 참가`, `🎮 Invite from ${game.invites[0].from} — room ${game.invites[0].code} · J to join`), false]);   // D91
       break;
     case 'settings': {
       const nick = localStorage.getItem('nickname') ?? online.nickname();
@@ -1065,12 +1068,29 @@ function drawMenus(hudY, g, now) {
         [L('1  방 만들기', '1  Create room'), game.pvpSel === 0],
         [L('2  코드로 참가', '2  Join with code'), game.pvpSel === 1],
         [L('3  랜덤 매칭 — 3이닝·어려움·물리 준수 고정', '3  Random match — fixed: 3 innings · Hard · realistic physics'), game.pvpSel === 2],
-        [L('이닝      ', 'Innings   ') + `◂ ${game.matchInnings} ▸`, game.pvpSel === 3],
-        [L('타격 난도 ', 'Batting   ') + `◂ ${DUEL_LEVELS[game.duelLevel].label(L)} ▸`, game.pvpSel === 4],
-        [L('궤적      ', 'Physics   ') + `◂ ${game.physChaos ? L('물리 위반', 'arcade') : L('물리 준수', 'realistic')} ▸`, game.pvpSel === 5],
+        [L('4  친구 — 초대·목록', '4  Friends — invite · list') + (game.invites.length ? L(`  (초대 ${game.invites.length})`, `  (${game.invites.length} invite)`) : ''), game.pvpSel === 3],
+        [L('이닝      ', 'Innings   ') + `◂ ${game.matchInnings} ▸`, game.pvpSel === 4],
+        [L('타격 난도 ', 'Batting   ') + `◂ ${DUEL_LEVELS[game.duelLevel].label(L)} ▸`, game.pvpSel === 5],
+        [L('궤적      ', 'Physics   ') + `◂ ${game.physChaos ? L('물리 위반', 'arcade') : L('물리 준수', 'realistic')} ▸`, game.pvpSel === 6],
       ];
       if (game.pvpStatus) rows.push([game.pvpStatus, false]);
       break;
+    case 'friends': {   // D91: 초대들 → 친구들 → + 추가
+      rows = [];
+      game.invites.forEach((inv, i) => rows.push([L(`🎮 ${inv.from} 님의 초대 — 방 ${inv.code} → 참가`, `🎮 Invite from ${inv.from} — room ${inv.code} → join`), game.friendSel === i]));
+      game.friends.forEach((f, i) => {
+        const s = f.seenAgoSec;
+        const seen = f.online ? L('온라인', 'online')
+          : s === null ? L('접속 기록 없음', 'never')
+          : s < 3600 ? L(`${Math.floor(s / 60)}분 전`, `${Math.floor(s / 60)}m ago`)
+          : s < 86400 ? L(`${Math.floor(s / 3600)}시간 전`, `${Math.floor(s / 3600)}h ago`) : L(`${Math.floor(s / 86400)}일 전`, `${Math.floor(s / 86400)}d ago`);
+        rows.push([`${f.display} · ${seen} · ` + L(`${f.w}승 ${f.l}패`, `${f.w}W ${f.l}L`), game.friendSel === game.invites.length + i]);
+      });
+      rows.push([L('+  친구 추가', '+  Add a friend'), game.friendSel === game.invites.length + game.friends.length]);   // 안내 행은 뒤에 (탭 인덱스)
+      if (!game.friends.length && !game.invites.length) rows.push([L('아직 친구가 없습니다 — 닉네임#숫자로 추가하세요', 'No friends yet — add one by nickname#tag'), false]);
+      if (game.friendsStatus) rows.push([game.friendsStatus, false]);
+      break;
+    }
     case 'pvpLobby':
       if (game.matchTicket) {
         const wait = Math.floor((now - game.matchmakeStartAt) / 1000);
@@ -1106,6 +1126,7 @@ function drawMenus(hudY, g, now) {
     : game.screen === 'matchMenu' ? L('1/2 선택 · Esc 뒤로', '1/2 select · Esc back')
     : game.screen === 'pvpMenu' ? L('↑↓ 항목 · ◂▸ 방 설정 · Space 확인 · Esc 뒤로', '↑↓ item · ◂▸ room setting · Space confirm · Esc back')
     : game.screen === 'pvpLobby' ? L('Esc 취소', 'Esc cancel')
+    : game.screen === 'friends' ? L('↑↓ 선택 · Enter 초대(방 생성)/참가/추가 · ⌫ 삭제 · R 새로고침 · Esc 뒤로', '↑↓ select · Enter invite (creates room)/join/add · ⌫ remove · R refresh · Esc back')
     : game.screen === 'settings' ? L('1~7 또는 ↑↓+Space 로 변경 · Esc 뒤로', '1–7 or ↑↓+Space to change · Esc back')
     : L('↑↓ 항목 · ◂▸ 변경 · Space 시작 · Esc 뒤로', '↑↓ item · ◂▸ change · Space start · Esc back');
   text(hint, 28, rowsY + Math.max(rows.length, 3) * rowH + 8, smallFont, ink(0.4));
@@ -1754,6 +1775,7 @@ addEventListener('keydown', (e) => {
       if (e.code === 'ArrowUp') game.homeSel = (game.homeSel + 4) % 5;
       else if (e.code === 'ArrowDown') game.homeSel = (game.homeSel + 1) % 5;
       else if (/^Digit[1-5]$/.test(e.code)) { game.homeSel = +e.code[5] - 1; enterHome(); }
+      else if (e.code === 'KeyJ') joinInvite();   // D91
       else if (space || e.code === 'Enter') enterHome();
       break;
     case 'matchMenu':
@@ -1767,21 +1789,39 @@ addEventListener('keydown', (e) => {
       else if (e.code === 'Escape') { game.screen = 'home'; game.menuNotice = ''; }
       break;
     case 'pvpMenu':
-      if (e.code === 'ArrowUp') game.pvpSel = (game.pvpSel + 5) % 6;
-      else if (e.code === 'ArrowDown') game.pvpSel = (game.pvpSel + 1) % 6;
+      if (e.code === 'ArrowUp') game.pvpSel = (game.pvpSel + 6) % 7;
+      else if (e.code === 'ArrowDown') game.pvpSel = (game.pvpSel + 1) % 7;
       else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
-        if (game.pvpSel >= 3) changeDuelSetting(game.pvpSel - 3, e.code === 'ArrowLeft');
+        if (game.pvpSel >= 4) changeDuelSetting(game.pvpSel - 4, e.code === 'ArrowLeft');
       }
       else if (e.code === 'Digit1') pvp.createRoom();
       else if (e.code === 'Digit2') promptJoinCode();
       else if (e.code === 'Digit3') pvp.randomMatch();
+      else if (e.code === 'Digit4') friendsOpen();
+      else if (e.code === 'KeyJ') joinInvite();
       else if (space || e.code === 'Enter') {
         if (game.pvpSel === 0) pvp.createRoom();
         else if (game.pvpSel === 1) promptJoinCode();
         else if (game.pvpSel === 2) pvp.randomMatch();
+        else if (game.pvpSel === 3) friendsOpen();
       }
       else if (e.code === 'Escape') game.screen = 'matchMenu';
       break;
+    case 'friends': {   // D91
+      const n = friendRowCount();
+      if (e.code === 'ArrowUp') game.friendSel = (game.friendSel + n - 1) % n;
+      else if (e.code === 'ArrowDown') game.friendSel = (game.friendSel + 1) % n;
+      else if (space || e.code === 'Enter') {
+        if (game.friendSel < game.invites.length) joinInvite(game.friendSel);
+        else if (game.friendSel < game.invites.length + game.friends.length) inviteSelectedFriend();
+        else promptAddFriend();
+      }
+      else if (e.code === 'KeyA') promptAddFriend();
+      else if (e.code === 'Backspace' || e.code === 'Delete') removeSelectedFriend();
+      else if (e.code === 'KeyR') refreshFriends();
+      else if (e.code === 'Escape') game.screen = 'pvpMenu';
+      break;
+    }
     case 'pvpLobby':
       if (e.code === 'Escape') { pvp.leave(false); game.screen = 'pvpMenu'; }
       else if (e.code === 'KeyC' && !game.matchTicket && game.roomCode) shareRoomCode();
@@ -1857,7 +1897,16 @@ canvas.addEventListener('pointerdown', (e) => {
       const i = a.row;
       if (game.screen === 'onboard') { game.onboardSel = i; finishOnboard(); return; }
       if (game.screen === 'settings') { game.settingsSel = i; if (i <= 6) editSetting(i); return; }
-      if (game.screen === 'home') { game.homeSel = i; enterHome(); }
+      if (game.screen === 'home') { if (i === 5 && game.invites.length) joinInvite(); else { game.homeSel = i; enterHome(); } }
+      else if (game.screen === 'friends') {   // D91
+        if (i < game.invites.length) joinInvite(i);
+        else if (i < game.invites.length + game.friends.length) {
+          game.friendSel = i;
+          const f = game.friends[i - game.invites.length];
+          const c = window.prompt(L(`${f.display} — 1 초대(내 방 생성) · 2 삭제`, `${f.display} — 1 invite (creates my room) · 2 remove`), '1');
+          if (c === '1') inviteSelectedFriend(); else if (c === '2') removeSelectedFriend();
+        } else if (i === game.invites.length + game.friends.length) promptAddFriend();
+      }
       else if (game.screen === 'matchMenu') {
         game.matchSel = i;
         if (i === 0) game.screen = 'matchSetup';
@@ -1866,7 +1915,8 @@ canvas.addEventListener('pointerdown', (e) => {
         if (i === 0) pvp.createRoom();
         else if (i === 1) promptJoinCode();
         else if (i === 2) pvp.randomMatch();
-        else if (i <= 5) { game.pvpSel = i; changeDuelSetting(i - 3, false); }
+        else if (i === 3) friendsOpen();
+        else if (i <= 6) { game.pvpSel = i; changeDuelSetting(i - 4, false); }
       } else if (game.screen === 'pvpLobby') {
         if (i === game.lobbyCancelRow) { pvp.leave(false); game.screen = 'pvpMenu'; }
         else if (i === game.lobbyShareRow && !game.matchTicket && game.roomCode) shareRoomCode();
@@ -1919,6 +1969,60 @@ function updateChrome() {
 updateChrome();
 
 // ═══ 프레임 루프 ═══
+// ═══ 친구 (D91) — main.swift Game 의 친구 부분 ═══
+function applyFriends(r) {
+  if (!r) return;
+  game.friends = (r.friends ?? []).map((f) => ({ id: String(f.id ?? ''), display: shortDisplay(String(f.display ?? '?'), 10),
+    online: f.online === true, seenAgoSec: Number.isInteger(f.seenAgoSec) ? f.seenAgoSec : null, w: f.w | 0, l: f.l | 0 }));
+  game.invites = (r.invites ?? []).filter((i) => typeof i.code === 'string').map((i) => ({ from: shortDisplay(String(i.from ?? '?'), 8), code: i.code }));
+  if (game.friendSel >= friendRowCount()) game.friendSel = Math.max(0, friendRowCount() - 1);
+}
+const friendRowCount = () => game.invites.length + game.friends.length + 1;
+function friendsOpen() { game.screen = 'friends'; game.friendSel = 0; game.friendsStatus = ''; refreshFriends(); }
+function refreshFriends() {
+  game.friendsPollAt = Date.now();
+  if (!online.identityId) { game.friendsStatus = L('서버 연결 필요 — 설정에서 온라인 참여를 켜세요', 'Server connection required — enable online play in Settings'); return; }
+  online.fetchFriends().then(applyFriends);
+}
+function pollFriendsIfDue() {   // 친구 화면 5초, 메뉴(초대 알림) 10초
+  if (!online.identityId) return;
+  const period = game.screen === 'friends' ? 5000 : 10000;
+  if (!['friends', 'home', 'matchMenu', 'pvpMenu'].includes(game.screen) || Date.now() - game.friendsPollAt < period) return;
+  game.friendsPollAt = Date.now();
+  online.fetchFriends().then(applyFriends);
+}
+async function addFriend(display) {
+  const d = (display ?? '').trim();
+  if (!/^.+#\d{4}$/.test(d)) { game.friendsStatus = L('닉네임#1234 형식으로 입력하세요', 'Enter as nickname#1234'); return; }
+  game.friendsStatus = L('추가 중…', 'Adding…');
+  const r = await online.addFriend(d);
+  if (r) { applyFriends(r); game.friendsStatus = L('추가했습니다', 'Added'); }
+  else game.friendsStatus = L('그 닉네임을 찾을 수 없습니다 (#숫자까지 정확히)', 'Nickname not found (include the exact #tag)');
+}
+async function removeSelectedFriend() {
+  const i = game.friendSel - game.invites.length;
+  if (i < 0 || i >= game.friends.length) return;
+  const r = await online.removeFriend(game.friends[i].id);
+  applyFriends(r); game.friendsStatus = L('삭제했습니다', 'Removed');
+}
+function inviteSelectedFriend() {   // 방을 만들고(호스트) 초대를 보낸 뒤 로비에서 기다린다
+  const i = game.friendSel - game.invites.length;
+  if (i < 0 || i >= game.friends.length) return;
+  game.pendingInviteFriendId = game.friends[i].id;
+  game.pvpSel = 0; game.screen = 'pvpMenu';
+  pvp.createRoom();
+}
+function joinInvite(idx = 0) {
+  if (idx >= game.invites.length) return;
+  const code = game.invites[idx].code;
+  game.invites.splice(idx, 1);
+  enterPvpMenu(); game.pvpSel = 1;
+  pvp.joinRoom(code);
+}
+function promptAddFriend() {
+  const v = window.prompt(L('친구의 닉네임#숫자 (리더보드·나의 기록에 표시되는 그대로)', "Your friend's nickname#tag exactly as shown on the leaderboard"), '');
+  if (v !== null) addFriend(v);
+}
 // 링크(`?room=CODE`)로 받은 방 코드를 메뉴에서 소비 (D87) — 플레이 중이면 메뉴로 돌아왔을 때
 function consumePendingLink() {
   if (!['home', 'matchMenu', 'pvpMenu', 'matchSetup'].includes(game.screen)) return;
@@ -1931,6 +2035,7 @@ function consumePendingLink() {
 }
 function tick(now) {
   if (game.pendingRoomCode || game.pendingChallengeCode) consumePendingLink();
+  pollFriendsIfDue();   // D91
   online.refreshSeedIfStale();   // D79
   if (game.pvp) pvp.processEvents(now);   // 일시정지 여부와 무관 — 상대 이벤트는 항상 소비
   // helpOpen 은 틱을 막지 않는다 — 투구 중에 안내를 열면 그 공은 그냥 날아간다
@@ -1950,6 +2055,6 @@ function frame(t) {
 requestAnimationFrame(frame);
 
 // 디버그/자동화 훅 — 상태 점검용 (게임 조작은 입력 경로로만)
-window.__bb = { game, duel, online, pvp, startSession, startChallenge, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
+window.__bb = { game, duel, online, pvp, startSession, startChallenge, friendsOpen, addFriend, inviteSelectedFriend, joinInvite, refreshFriends, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
                 get regions() { return regions; }, get scale() { return scale; },
                 get summary() { return game.session.summary(); } };

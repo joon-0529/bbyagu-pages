@@ -201,6 +201,13 @@ export function makeOnline(L) {
              + 'Copies in backups disappear within 30 days.') };
   };
 
+  // ── 친구 (D91) ──
+  o.fetchFriends = () => (o.identityId ? request(`/friends?identityId=${o.identityId}`, 'GET', null, { timeout: 6000 }) : Promise.resolve(null));
+  o.addFriend = (display) => (o.identityId ? request('/friends', 'POST', { identityId: o.identityId, display }, { timeout: 6000 }) : Promise.resolve(null));
+  o.removeFriend = (friendId) => (o.identityId ? request('/friends', 'DELETE', { identityId: o.identityId, friendId }, { timeout: 6000 }) : Promise.resolve(null));
+  o.inviteFriend = async (friendId, code, playerId) =>
+    !!(o.identityId && await request('/friends/invite', 'POST', { identityId: o.identityId, friendId, code, playerId }, { timeout: 6000 }));
+
   // ── 같은 시드 도전 (D89) ──
   o.lastChallengeCode = null;
   o.createChallenge = async (sessionId, hr, dist) => {
