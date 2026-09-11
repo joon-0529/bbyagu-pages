@@ -345,7 +345,7 @@ function raceTick(now) {
           game.remoteSessionId = null;
           game.onlineStatus = L('온라인 제출 중…', 'Submitting…');
           online.submit({
-            sessionId: sid, offsets: game.raceOffsets,
+            sessionId: sid, offsets: game.raceOffsets, seed: game.session.seed, queueable: !game.challenge,
             homeruns: sum.homeruns, maxDistance: sum.maxDistance,
             maxCombo: sum.maxCombo, totalAtBats: sum.totalAtBats,
             durationMs: Math.round(performance.now() - game.sessionStartAt),
@@ -354,7 +354,12 @@ function raceTick(now) {
             if (online.lastChallengeResult) game.challengeBeat = online.lastChallengeResult.beat === true;   // D89
           });
         } else {
-          game.onlineStatus = L('오프라인 세션 — 로컬 기록만', 'Offline session — local record only');
+          if (online.enabled() && !game.challenge) {   // D94: 오프라인 판도 연결되면 리더보드에
+            online.enqueue({ kind: 'race', seed: game.session.seed, offsets: game.raceOffsets.slice(),
+              homeruns: sum.homeruns, maxDistance: sum.maxDistance, maxCombo: sum.maxCombo, totalAtBats: sum.totalAtBats });
+            online.flushPending();
+            game.onlineStatus = L('오프라인 판 — 연결되면 자동으로 리더보드에 올립니다', 'Offline game — will be submitted when back online');
+          } else game.onlineStatus = L('오프라인 세션 — 로컬 기록만', 'Offline session — local record only');
         }
       } else nextPitch(now);
       break;

@@ -114,6 +114,7 @@ export function makeOnline(L) {
     o.display = r.displayName ?? null;
     o.refreshStatusLine();
     o.prefetchSeed();
+    o.flushPending();   // D94: 오프라인 동안 쌓인 결과
   };
 
   o.retryNowIfOffline = () => {
@@ -131,6 +132,7 @@ export function makeOnline(L) {
   };
   // D79: 30분 넘게 묵은 시드(서버 만료 24h)·없는 시드(1분 뒤)는 다시 받는다 — main.swift 동일
   o.refreshSeedIfStale = () => {
+    if (o.identityId && !o.flushing && Date.now() - o.lastFlushTry > 30_000) o.flushPending();   // D94
     if (!o.identityId || o.prefetchingSeed) return;
     const age = Date.now() - o.nextSeedAt;
     if (age > (o.nextSeed ? 30 * 60_000 : 60_000)) o.prefetchSeed();
@@ -143,14 +145,20 @@ export function makeOnline(L) {
     return fresh ? ns : null;
   };
 
-  o.submit = async ({ sessionId, offsets, homeruns, maxDistance, maxCombo, totalAtBats, durationMs }) => {
+  o.submit = async ({ sessionId, offsets, homeruns, maxDistance, maxCombo, totalAtBats, durationMs, seed, queueable }) => {
     o.lastChallengeCode = null;
     const r = await request(`/sessions/${sessionId}/submit`, 'POST', {
       atBats: offsets.map((offsetMs) => ({ offsetMs })),
       summary: { homeruns, maxDistance, maxCombo, totalAtBats },
       durationMs,
     }, { timeout: 8000, retries: 2 });   // D79: 서버가 멱등이라 재시도 안전
-    if (!r) return L('서버에 연결하지 못함 — 로컬 기록만', 'Could not reach server — local record only');
+    if (!r) {   // D94: 끊겨도 버리지 않는다 — 대기열 (도전 판 제외)
+      if (queueable && enabled()) {
+        o.enqueue({ kind: 'race', seed, offsets, homeruns, maxDistance, maxCombo, totalAtBats });
+        return L('서버에 연결하지 못함 — 연결되면 자동으로 올립니다', 'Could not reach server — will submit when back online');
+      }
+      return L('서버에 연결하지 못함 — 로컬 기록만', 'Could not reach server — local record only');
+    }
     const verified = r.verified !== false;
     if (verified && !r.challenge) o.createChallenge(sessionId, homeruns, maxDistance);   // D89 공유 문구용
     o.lastChallengeResult = r.challenge ?? null;
@@ -168,11 +176,17 @@ export function makeOnline(L) {
 
   // 지옥 봇전 결과 제출 — 서버는 타당성 검사만
   o.submitDuel = async ({ innings, myRuns, botRuns, chaos, durationMs }) => {
-    if (!o.identityId) return L('오프라인 — 로컬 기록만', 'Offline — local record only');
+    // D94: 오프라인·전송 실패면 대기열에 넣고 연결되면 올린다
+    const queued = () => {
+      if (!enabled()) return L('오프라인 — 로컬 기록만', 'Offline — local record only');
+      o.enqueue({ kind: 'duel', innings, myRuns, botRuns, chaos, durationMs });
+      return L('오프라인 — 연결되면 자동으로 올립니다', 'Offline — will submit when back online');
+    };
+    if (!o.identityId) return queued();
     const r = await request('/duels', 'POST', {
       identityId: o.identityId, level: '지옥', innings, myRuns, botRuns, chaos, durationMs,
     });
-    if (!r) return L('서버에 연결하지 못함 — 로컬 기록만', 'Could not reach server — local record only');
+    if (!r) return queued();
     return r.verified === false
       ? L('기록 미등재 — 검증을 통과하지 못했습니다', 'Not listed — failed verification')
       : L('지옥 봇전 보드 제출됨', 'Submitted to the Hell bot board');
@@ -199,6 +213,36 @@ export function makeOnline(L) {
              + '백업에 남은 사본은 최대 30일 안에 함께 사라집니다.',
              `Done — ${n} leaderboard entries and your profile were removed from the server. `
              + 'Copies in backups disappear within 30 days.') };
+  };
+
+  // ── 오프라인·전송 실패 결과 대기열 (D94) — 온라인 참여를 켠 사람만. 연결되면 자동 제출 ──
+  const PKEY = 'pendingResults';
+  const readQ = () => { try { return JSON.parse(localStorage.getItem(PKEY) ?? '[]'); } catch { return []; } };
+  const writeQ = (q) => localStorage.setItem(PKEY, JSON.stringify(q.slice(-20)));
+  o.flushing = false; o.lastFlushTry = 0;
+  o.enqueue = (item) => { if (enabled()) writeQ([...readQ(), { ...item, tries: 0 }]); };
+  // 맨 앞 것부터. 서버가 받으면(등재 여부와 무관) 빼고 다음 것, 연결 실패면 멈춘다 — 8번 실패하면 버림
+  o.flushPending = async () => {
+    o.lastFlushTry = Date.now();
+    if (!o.identityId || o.flushing) return;
+    o.flushing = true;
+    try {
+      for (;;) {
+        const it = readQ()[0];
+        if (!it) return;
+        const r = it.kind === 'race'
+          ? await request('/sessions/offline', 'POST', { identityId: o.identityId, seed: it.seed,
+              atBats: it.offsets.map((offsetMs) => ({ offsetMs })),
+              summary: { homeruns: it.homeruns, maxDistance: it.maxDistance, maxCombo: it.maxCombo, totalAtBats: it.totalAtBats },
+              durationMs: 0 }, { timeout: 10_000 })
+          : await request('/duels', 'POST', { identityId: o.identityId, level: '지옥', innings: it.innings,
+              myRuns: it.myRuns, botRuns: it.botRuns, chaos: it.chaos, durationMs: it.durationMs }, { timeout: 10_000 });
+        const q = readQ();
+        if (r) { q.shift(); writeQ(q); continue; }
+        if (q[0]) { q[0].tries = (q[0].tries | 0) + 1; if (q[0].tries >= 8) q.shift(); writeQ(q); }
+        return;
+      }
+    } finally { o.flushing = false; }
   };
 
   // ── 친구 (D91) ──
