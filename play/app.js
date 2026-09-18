@@ -25,7 +25,7 @@ const game = {
   onboardSel: 0, settingsSel: 0,
   termsScroll: 0, termsFrom: 'settings',
   // 리더보드 v2
-  lbPage: 0, lbInnings: 3, lbChaos: false,
+  lbPage: 0, lbInnings: 3, lbChaos: false, lbFriendsOnly: false,   // D98
   lbMore: false, lbMoreOffset: 0, lbMorePage: 30,
   lbCache: {}, lbInFlight: new Set(), lbFailed: new Set(),
   myRanks: {},
@@ -62,7 +62,7 @@ const game = {
   oppAlive: true, pvpStatus: '', rematchMine: false, rematchOpp: false,
   pollGen: 0, pollFails: 0, ranked: false, matchTicket: null, matchmakeStartAt: 0, pvpSel: 0,
   // ── 친구 (D91) ──
-  friends: [], invites: [], friendSel: 0, friendsStatus: '', friendsPollAt: 0, pendingInviteFriendId: null,
+  friends: [], invites: [], notices: [], homeNoticeRow: -1, friendSel: 0,   // D98 friendsStatus: '', friendsPollAt: 0, pendingInviteFriendId: null,
   get canPause() {
     if (this.paused) return true;
     if (this.pvp) return false;               // 상대가 기다린다 — PvP 는 멈출 수 없다
@@ -88,18 +88,20 @@ const LB_PAGES = [
   { title: () => L('홈런레이스 최다 홈런', 'Homerun Race · Most HR'), unit: () => L('홈런', 'HR'), key: () => 'SESSION_HOMERUNS', hasInnings: false, hasChaos: false },
   { title: () => L('홈런레이스 최장 비거리', 'Homerun Race · Longest HR'), unit: () => 'm', key: () => 'BEST_DISTANCE', hasInnings: false, hasChaos: false },
   { title: () => L('홈런레이스 최다 연속 홈런', 'Homerun Race · Best Streak'), unit: () => L('연속', 'streak'), key: () => 'MAX_COMBO', hasInnings: false, hasChaos: false },
+  { title: () => L('홈런레이스 통산 홈런', 'Homerun Race · Career HR'), unit: () => L('홈런', 'HR'), key: () => 'CAREER_HR', hasInnings: false, hasChaos: false },
   { title: () => L('지옥 봇전 최다 점수차 승리', 'Hell Bots · Biggest Win Margin'), unit: () => L('점차', 'margin'), key: (i, c) => `DUEL_WIN_MARGIN_${i}_${c ? 'C' : 'N'}`, hasInnings: true, hasChaos: true },
   { title: () => L('지옥 봇전 한 경기 최다 득점', 'Hell Bots · Most Runs, One Game'), unit: () => L('점', 'runs'), key: (i, c) => `DUEL_BEST_RUNS_${i}_${c ? 'C' : 'N'}`, hasInnings: true, hasChaos: true },
   { title: () => L('랭크전 최다승', 'Ranked · Most Wins'), unit: () => L('승', 'wins'), key: () => 'PVP_WINS', hasInnings: false, hasChaos: false },
   { title: () => L('랭크전 최고 승률', 'Ranked · Best Win Rate'), unit: () => '%', key: () => 'PVP_WINRATE', hasInnings: false, hasChaos: false },
 ];
-const lbBoardKey = () => LB_PAGES[game.lbPage].key(game.lbInnings, game.lbChaos);
+const lbBoardKey = () => LB_PAGES[game.lbPage].key(game.lbInnings, game.lbChaos) + (game.lbFriendsOnly ? '#F' : '');   // D98 (#F 는 캐시 키용)
 // 보드별 재진입 차단 — lbFailed 도 넣어야 무한 재귀가 없다 (맥 주석 그대로)
 async function lbFetch() {
   const key = lbBoardKey();
   if (game.lbCache[key] || game.lbFailed.has(key) || game.lbInFlight.has(key)) return;
   game.lbInFlight.add(key);
-  const top = await online.fetchBoard(key, 100);
+  const board = key.endsWith('#F') ? key.slice(0, -2) : key;   // 서버에는 원래 이름으로
+  const top = await online.fetchBoard(board, 100, game.lbFriendsOnly ? online.identityId : null);
   game.lbInFlight.delete(key);
   if (top) { game.lbCache[key] = top; game.lbFailed.delete(key); }
   else game.lbFailed.add(key);
@@ -259,6 +261,7 @@ async function startChallenge(code) {
   beginRace();
 }
 function beginRace() {
+  localStorage.removeItem('savedRace');   // D100: 새 판이 시작되면 저장본은 버린다
   game.sessionStartAt = performance.now();
   game.onlineStatus = '';
   game.raceOffsets = [];
@@ -303,8 +306,11 @@ function resolveRace(offset) {
   game.fly = (dist > 0 && out.result !== 'STRIKEOUT')
     ? { at: performance.now(), dist, kind: out.result === 'HOMERUN' ? 'hr' : 'fly' }
     : null;
+  if (out.result === 'HOMERUN') haptic('heavy');   // D99
+  else if (['FLYOUT', 'GROUNDOUT', 'FOUL'].includes(out.result)) haptic('light');
   if (out.result === 'HOMERUN') game.cheerAt = performance.now() + cheerDelay(dist, true, cfg.homerunLine);   // 담장 넘은 뒤 (D84)
   game.phase = 'resolving';
+  persistRace();   // D100 — 타석마다 저장 (새로고침·탭 전환 대비)
   game.resolveUntil = performance.now() + 1300;   // 맥과 동일 (1500 이었던 건 오기)
 }
 // 저장 **전**의 개인 최고를 돌려준다 — 신기록 판정 기준 (맥 saveRaceRecord)
@@ -392,6 +398,40 @@ function closeHelp() {
 }
 
 // ═══ 내비게이션 (main.swift enterHome 등) ═══
+// D100 — 진행 중 판 저장·복원 (맥 persistRace/restoreRaceIfAny 의 웹판).
+// 시드와 입력만 저장하고 복원은 엔진 리플레이 — 결정론이라 같은 입력이면 같은 상태다.
+function persistRace() {
+  if (game.mode !== 'race' || game.screen !== 'race' || !game.session
+      || game.session.ended || game.session.nextIndex === 0 || game.challenge) {
+    localStorage.removeItem('savedRace'); return;
+  }
+  try {
+    localStorage.setItem('savedRace', JSON.stringify({
+      seed: game.session.seed, offsets: game.raceOffsets,
+      remote: game.remoteSessionId ?? '', elapsed: performance.now() - game.sessionStartAt }));
+  } catch { /* 저장 공간이 없으면 그냥 포기 */ }
+}
+function restoreRaceIfAny() {
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem('savedRace') ?? 'null'); } catch { s = null; }
+  localStorage.removeItem('savedRace');
+  if (!s?.seed || !Array.isArray(s.offsets)) return false;
+  game.session = new SessionState(s.seed, DIFF);
+  game.raceOffsets = [];
+  for (const o of s.offsets) { game.session.swing(o); game.raceOffsets.push(o); }
+  if (game.session.ended) return false;
+  game.remoteSessionId = s.remote || null;
+  game.sessionStartAt = performance.now() - (s.elapsed ?? 0);
+  game.challenge = null; game.challengeBeat = null;
+  game.raceEndedAt = 0; game.raceNewHigh = false;
+  game.onlineStatus = ''; game.fly = null; game.paused = false;
+  game.judgeText = L('이어서 계속 - 아웃 ', 'Resume - outs ')
+    + game.session.currentOuts + '/' + game.session.maxOuts;
+  nextPitch(performance.now());
+  return true;
+}
+window.addEventListener('pagehide', persistRace);
+document.addEventListener('visibilitychange', () => { if (document.hidden) persistRace(); });
 function enterRace() {
   game.screen = 'race'; game.mode = 'race'; game.menuNotice = '';
   // 같은 실행 안에서는 세션이 살아 있다 — 나갔다 들어오면 이어서 (맥 restoreRace 축소판)
@@ -401,7 +441,7 @@ function enterRace() {
       + game.session.currentOuts + '/' + game.session.maxOuts;
     game.fly = null;
     nextPitch(performance.now());
-  } else startSession();
+  } else if (!restoreRaceIfAny()) startSession();
 }
 function enterHome() {
   switch (game.homeSel) {
@@ -413,6 +453,7 @@ function enterHome() {
   }
 }
 function leaveToHome() {
+  if (game.screen === 'race') persistRace();   // D100
   game.paused = false; game.helpOpen = false;
   game.screen = 'home'; game.phase = 'idle'; game.menuNotice = '';
 }
@@ -518,6 +559,12 @@ game.onMatchResult = (myRuns, botRuns) => {
 };
 
 // ═══ 포즈 (main.swift batterPose/pitcherPose 포팅) ═══
+// D99 진동 — navigator.vibrate 가 있는 브라우저에서만 (iOS 사파리는 지원 안 함)
+function haptic(kind) {
+  if (localStorage.getItem('haptics') === '0') return;
+  navigator.vibrate?.(kind === 'heavy' ? 28 : kind === 'medium' ? 16 : 8);
+}
+game.haptic = haptic;
 const SHARE_BASE = 'https://bbyagu.com/game/play';   // 공유 링크 기준 (D87·D90): 앱이 있으면 앱, 없으면 웹판으로
 const SWING_MS = 150;
 // D84 — 축포는 공이 담장을 넘는 순간부터. 타구 애니메이션 900ms 에서 담장 통과 시각 역산 (맥 cheerDelay)
@@ -1034,6 +1081,12 @@ function drawMenus(hudY, g, now) {
         [L('5  설정 — 닉네임·온라인 참여·약관', '5  Settings — nickname · online · terms'), game.homeSel === 4],
       ];
       if (game.invites[0]) rows.push([L(`🎮 ${game.invites[0].from} 님의 초대 — 방 ${game.invites[0].code} · J 참가`, `🎮 Invite from ${game.invites[0].from} — room ${game.invites[0].code} · J to join`), false]);   // D91
+      game.homeNoticeRow = -1;
+      if (game.notices[0]) {   // D98
+        rows.push([L(`🏏 ${game.notices[0].by} 님이 내 도전을 깼습니다 — ${game.notices[0].hr}홈런 · N 확인`,
+                     `🏏 ${game.notices[0].by} beat your challenge — ${game.notices[0].hr} HR · N to dismiss`), false]);
+        game.homeNoticeRow = rows.length - 1;
+      }
       break;
     case 'settings': {
       const nick = localStorage.getItem('nickname') ?? online.nickname();
@@ -1482,6 +1535,14 @@ function drawLeaderboard() {
   const listTop = 186, listBottom = H - 34;
   const listRows = Math.max(0, Math.floor((listBottom - listTop) / 14));
   const listCols = Math.max(1, Math.min(3, Math.floor((W - 80) / 200)));
+  if (online.identityId) {   // D98 — 친구만 보기
+    const fr = { x: W - 110, y: 64, w: 86, h: 20 };
+    ctx.strokeStyle = ink(game.lbFriendsOnly ? 0.75 : 0.4); ctx.lineWidth = 1;
+    roundedRect(fr.x, fr.y, fr.w, fr.h, 5); ctx.stroke();
+    reg(fr, 'lbFriends');
+    text(game.lbFriendsOnly ? L('친구만 ✓', 'Friends ✓') : L('친구만 F', 'Friends F'),
+         fr.x + 10, fr.y + 4, smallFont, ink(game.lbFriendsOnly ? 0.9 : 0.6));
+  }
   if (!game.lbMore && entries && entries.length > 3 + listRows * listCols) {
     ctx.strokeStyle = ink(0.4); ctx.lineWidth = 1;
     roundedRect(W - 110, 40, 86, 20, 5); ctx.stroke();
@@ -1583,6 +1644,7 @@ function drawRecords() {
     [L('홈런 보드', 'HR board'), rank('SESSION_HOMERUNS')],
     [L('비거리 보드', 'Distance board'), rank('BEST_DISTANCE')],
   ];
+  if (online.pendingCount() > 0) left.push([L('올릴 기록', 'To upload'), KO ? `${online.pendingCount()}건` : `${online.pendingCount()}`]);   // D99
   const right = [
     [L('경기 모드', 'Game mode'), ''],
     [L('봇전 전적', 'vs Bot record'), KO ? `${li('matchW')}승 ${li('matchL')}패 ${li('matchD')}무`
@@ -1757,6 +1819,7 @@ addEventListener('keydown', (e) => {
       }
       else if (e.code === 'KeyC' && LB_PAGES[game.lbPage].hasChaos) { game.lbChaos = !game.lbChaos; lbFetch(); }
       else if (e.code === 'KeyM') { game.lbMore = !game.lbMore; game.lbMoreOffset = 0; }
+      else if (e.code === 'KeyF' && online.identityId) { game.lbFriendsOnly = !game.lbFriendsOnly; game.lbMore = false; game.lbMoreOffset = 0; lbFetch(); }   // D98
       else if (e.code === 'KeyR') {
         game.lbFailed.delete(lbBoardKey());
         if (!online.identityId) online.retryNowIfOffline();
@@ -1781,6 +1844,7 @@ addEventListener('keydown', (e) => {
       else if (e.code === 'ArrowDown') game.homeSel = (game.homeSel + 1) % 5;
       else if (/^Digit[1-5]$/.test(e.code)) { game.homeSel = +e.code[5] - 1; enterHome(); }
       else if (e.code === 'KeyJ') joinInvite();   // D91
+      else if (e.code === 'KeyN') ackNotices();   // D98
       else if (space || e.code === 'Enter') enterHome();
       break;
     case 'matchMenu':
@@ -1898,11 +1962,12 @@ canvas.addEventListener('pointerdown', (e) => {
     if (a === 'lbNext') { lbMove(1); return; }
     if (a === 'lbChaos') { game.lbChaos = !game.lbChaos; lbFetch(); return; }
     if (a === 'lbMore') { game.lbMore = true; game.lbMoreOffset = 0; return; }
+    if (a === 'lbFriends') { game.lbFriendsOnly = !game.lbFriendsOnly; game.lbMore = false; game.lbMoreOffset = 0; lbFetch(); return; }   // D98
     if (typeof a === 'object' && 'row' in a) {
       const i = a.row;
       if (game.screen === 'onboard') { game.onboardSel = i; finishOnboard(); return; }
       if (game.screen === 'settings') { game.settingsSel = i; if (i <= 6) editSetting(i); return; }
-      if (game.screen === 'home') { if (i === 5 && game.invites.length) joinInvite(); else { game.homeSel = i; enterHome(); } }
+      if (game.screen === 'home') { if (i === game.homeNoticeRow) ackNotices(); else if (i === 5 && game.invites.length) joinInvite(); else { game.homeSel = i; enterHome(); } }
       else if (game.screen === 'friends') {   // D91
         if (i < game.invites.length) joinInvite(i);
         else if (i < game.invites.length + game.friends.length) {
@@ -1979,10 +2044,13 @@ function applyFriends(r) {
   if (!r) return;
   game.friends = (r.friends ?? []).map((f) => ({ id: String(f.id ?? ''), display: shortDisplay(String(f.display ?? '?'), 10),
     online: f.online === true, seenAgoSec: Number.isInteger(f.seenAgoSec) ? f.seenAgoSec : null, w: f.w | 0, l: f.l | 0 }));
+  game.notices = (r.notices ?? []).filter((n) => n && typeof n.by === 'string')   // D98
+    .map((n) => ({ by: shortDisplay(String(n.by), 8), hr: n.hr | 0 }));
   game.invites = (r.invites ?? []).filter((i) => typeof i.code === 'string').map((i) => ({ from: shortDisplay(String(i.from ?? '?'), 8), code: i.code }));
   if (game.friendSel >= friendRowCount()) game.friendSel = Math.max(0, friendRowCount() - 1);
 }
 const friendRowCount = () => game.invites.length + game.friends.length + 1;
+function ackNotices() { game.notices = []; online.ackNotices(); }   // D98
 function friendsOpen() { game.screen = 'friends'; game.friendSel = 0; game.friendsStatus = ''; refreshFriends(); }
 function refreshFriends() {
   game.friendsPollAt = Date.now();
@@ -2060,6 +2128,6 @@ function frame(t) {
 requestAnimationFrame(frame);
 
 // 디버그/자동화 훅 — 상태 점검용 (게임 조작은 입력 경로로만)
-window.__bb = { game, duel, online, pvp, startSession, startChallenge, friendsOpen, addFriend, inviteSelectedFriend, joinInvite, refreshFriends, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
+window.__bb = { game, duel, online, pvp, startSession, startChallenge, persistRace, restoreRaceIfAny, ackNotices, friendsOpen, addFriend, inviteSelectedFriend, joinInvite, refreshFriends, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
                 get regions() { return regions; }, get scale() { return scale; },
                 get summary() { return game.session.summary(); } };

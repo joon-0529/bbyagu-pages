@@ -168,8 +168,9 @@ export function makeOnline(L) {
     return L('온라인 제출됨 — 순위권 밖', 'Submitted — outside the rankings');
   };
 
-  o.fetchBoard = async (board, limit = 10) => {
-    const r = await request(`/leaderboard?board=${board}&limit=${limit}`, 'GET', null,
+  o.fetchBoard = async (board, limit = 10, friendsOf = null) => {
+    const f = friendsOf ? `&friendsOf=${friendsOf}` : '';   // D98 친구만 보기
+    const r = await request(`/leaderboard?board=${board}&limit=${limit}${f}`, 'GET', null,
       { timeout: 8000, retries: 1 });
     return r?.top ?? null;
   };
@@ -221,6 +222,7 @@ export function makeOnline(L) {
   const writeQ = (q) => localStorage.setItem(PKEY, JSON.stringify(q.slice(-20)));
   o.flushing = false; o.lastFlushTry = 0;
   o.enqueue = (item) => { if (enabled()) writeQ([...readQ(), { ...item, tries: 0 }]); };
+  o.pendingCount = () => readQ().length;   // D99 나의 기록 표시용
   // 맨 앞 것부터. 서버가 받으면(등재 여부와 무관) 빼고 다음 것, 연결 실패면 멈춘다 — 8번 실패하면 버림
   o.flushPending = async () => {
     o.lastFlushTry = Date.now();
@@ -249,6 +251,7 @@ export function makeOnline(L) {
   o.fetchFriends = () => (o.identityId ? request(`/friends?identityId=${o.identityId}`, 'GET', null, { timeout: 6000 }) : Promise.resolve(null));
   o.addFriend = (display) => (o.identityId ? request('/friends', 'POST', { identityId: o.identityId, display }, { timeout: 6000 }) : Promise.resolve(null));
   o.removeFriend = (friendId) => (o.identityId ? request('/friends', 'DELETE', { identityId: o.identityId, friendId }, { timeout: 6000 }) : Promise.resolve(null));
+  o.ackNotices = () => (o.identityId ? request('/friends/notices/ack', 'POST', { identityId: o.identityId }) : Promise.resolve(null));   // D98
   o.inviteFriend = async (friendId, code, playerId) =>
     !!(o.identityId && await request('/friends/invite', 'POST', { identityId: o.identityId, friendId, code, playerId }, { timeout: 6000 }));
 

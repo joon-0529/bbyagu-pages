@@ -348,6 +348,7 @@ export function makeDuel(game, L, KOref) {
       saveMatchResult();
       msg += L(' → 끝내기!', ' → Walk-off!');
     }
+    if (mine) d.haptic?.(kind === 'hr' ? 'heavy' : (wasHit ? 'medium' : 'light'));   // D99
     d.judgeText = `[${pi}] ${msg}`;
     d.fly = (kind !== null && dist > 0)
       ? { at: performance.now(), dist, kind } : null;
