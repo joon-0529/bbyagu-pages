@@ -1,0 +1,302 @@
+[
+ {
+  "id": "kr_seoul",
+  "ko": "한국 — 서울 별빛 구장",
+  "en": "Korea — Seoul Starlight Park",
+  "tone": "dark",
+  "boardDark": false,
+  "horizon": 0.7328,
+  "wallEnd": 0.7945,
+  "dirt": "#AC744E",
+  "wallTop": 0.5902,
+  "light": "#FFD696",
+  "lightDir": [
+   -1,
+   -1
+  ],
+  "dirtA": 1.0,
+  "fw": [
+   "#FFD166",
+   "#FFFFFF",
+   "#FF4D5E",
+   "#5AB4FF"
+  ],
+  "fwLine": null,
+  "board": [
+   0.8035,
+   0.4586,
+   0.9915,
+   0.5733
+  ]
+ },
+ {
+  "id": "jp_sakura",
+  "ko": "일본 — 사쿠라 나이트",
+  "en": "Japan — Sakura Night",
+  "tone": "dark",
+  "boardDark": false,
+  "horizon": 0.7328,
+  "wallEnd": 0.7887,
+  "dirt": "#A87052",
+  "wallTop": 0.6112,
+  "light": "#FFD6E2",
+  "lightDir": [
+   -1,
+   -1
+  ],
+  "dirtA": 1.0,
+  "fw": [
+   "#FFFFFF",
+   "#FF8FC7",
+   "#FFD166",
+   "#FF4D5E"
+  ],
+  "fwLine": null,
+  "board": [
+   0.8104,
+   0.4237,
+   0.9878,
+   0.5434
+  ]
+ },
+ {
+  "id": "tw_island",
+  "ko": "대만 — 섬빛 구장",
+  "en": "Taiwan — Island Light Park",
+  "tone": "dark",
+  "boardDark": false,
+  "horizon": 0.7328,
+  "wallEnd": 0.7887,
+  "dirt": "#A46C4A",
+  "wallTop": 0.6112,
+  "light": "#FFD8A0",
+  "lightDir": [
+   -1,
+   -1
+  ],
+  "dirtA": 1.0,
+  "fw": [
+   "#FFFFFF",
+   "#FFD166",
+   "#3DF5C9",
+   "#FF5A5A"
+  ],
+  "fwLine": "#101820",
+  "board": [
+   0.8125,
+   0.4287,
+   0.9873,
+   0.5484
+  ]
+ },
+ {
+  "id": "us_classic",
+  "ko": "미국 — 그랜드스탠드 클래식",
+  "en": "USA — Grandstand Classic",
+  "tone": "dark",
+  "boardDark": true,
+  "horizon": 0.7328,
+  "wallEnd": 0.7865,
+  "dirt": "#B2744A",
+  "wallTop": 0.6012,
+  "light": "#FFDEAA",
+  "lightDir": [
+   -1,
+   -1
+  ],
+  "dirtA": 1.0,
+  "fw": [
+   "#FF4D5E",
+   "#FFFFFF",
+   "#6EC1FF",
+   "#FFD166"
+  ],
+  "fwLine": null,
+  "board": [
+   0.8189,
+   0.329,
+   0.9831,
+   0.4487
+  ]
+ },
+ {
+  "id": "neon",
+  "ko": "서울 네온돔",
+  "en": "Seoul Neon Dome",
+  "tone": "dark",
+  "boardDark": false,
+  "horizon": 0.7328,
+  "wallEnd": 0.7887,
+  "dirt": "#7E584C",
+  "wallTop": 0.6301,
+  "light": "#82F0FF",
+  "lightDir": [
+   -1,
+   -1
+  ],
+  "dirtA": 1.0,
+  "fw": [
+   "#FF3FD8",
+   "#3FF4FF",
+   "#FFE45C",
+   "#FFFFFF"
+  ],
+  "fwLine": null,
+  "board": [
+   0.8104,
+   0.4237,
+   0.9852,
+   0.5484
+  ]
+ },
+ {
+  "id": "sunset",
+  "ko": "끝내기 노을",
+  "en": "Walk-off Sunset",
+  "tone": "dark",
+  "boardDark": true,
+  "horizon": 0.7328,
+  "wallEnd": 0.7887,
+  "dirt": "#B8784E",
+  "wallTop": 0.673,
+  "light": "#FFAA64",
+  "lightDir": [
+   1,
+   -0.6
+  ],
+  "dirtA": 1.0,
+  "fw": [
+   "#FFFFFF",
+   "#2D6BFF",
+   "#8B5CFF",
+   "#FFE45C"
+  ],
+  "fwLine": "#101820",
+  "board": [
+   0.8104,
+   0.4167,
+   0.9852,
+   0.5484
+  ]
+ },
+ {
+  "id": "sakura",
+  "ko": "사쿠라 그랜드스탠드",
+  "en": "Sakura Grandstand",
+  "tone": "dark",
+  "boardDark": false,
+  "horizon": 0.7328,
+  "wallEnd": 0.7887,
+  "dirt": "#B47E60",
+  "wallTop": 0.6132,
+  "light": "#FFC8D6",
+  "lightDir": [
+   -1,
+   -1
+  ],
+  "dirtA": 1.0,
+  "fw": [
+   "#FFFFFF",
+   "#FFD166",
+   "#FF3FA4",
+   "#5CE1FF"
+  ],
+  "fwLine": null,
+  "board": [
+   0.8104,
+   0.4108,
+   0.9852,
+   0.5484
+  ]
+ },
+ {
+  "id": "moon",
+  "ko": "문샷 오비탈파크",
+  "en": "Moonshot Orbital Park",
+  "tone": "dark",
+  "boardDark": true,
+  "horizon": 0.7328,
+  "wallEnd": 0.7887,
+  "dirt": "#968E86",
+  "wallTop": 0.6122,
+  "light": "#C8E4FF",
+  "lightDir": [
+   1,
+   -1
+  ],
+  "dirtA": 1.0,
+  "fw": [
+   "#5CE1FF",
+   "#FFFFFF",
+   "#FF7A59",
+   "#FFD166"
+  ],
+  "fwLine": null,
+  "board": [
+   0.8077,
+   0.4237,
+   0.9852,
+   0.5484
+  ]
+ },
+ {
+  "id": "ink",
+  "ko": "잉크 클러치",
+  "en": "Ink Clutch",
+  "tone": "light",
+  "boardDark": true,
+  "horizon": 0.7328,
+  "wallEnd": 0.7887,
+  "dirt": "#BAA078",
+  "wallTop": 0.663,
+  "light": null,
+  "lightDir": [
+   0,
+   0
+  ],
+  "dirtA": 0.55,
+  "fw": [
+   "#C8261E",
+   "#1A1A1A",
+   "#8A5A00",
+   "#C8261E"
+  ],
+  "fwLine": "#F7F1E3",
+  "board": [
+   0.8104,
+   0.4187,
+   0.9852,
+   0.5633
+  ]
+ },
+ {
+  "id": "aurora",
+  "ko": "오로라 클래식",
+  "en": "Aurora Classic",
+  "tone": "dark",
+  "boardDark": false,
+  "horizon": 0.7328,
+  "wallEnd": 0.7887,
+  "dirt": "#BAB0AC",
+  "wallTop": 0.654,
+  "light": "#BEFFEC",
+  "lightDir": [
+   -1,
+   -1
+  ],
+  "dirtA": 1.0,
+  "fw": [
+   "#FFD166",
+   "#FFFFFF",
+   "#FF7AA8",
+   "#FF9F43"
+  ],
+  "fwLine": null,
+  "board": [
+   0.8104,
+   0.4237,
+   0.9852,
+   0.5484
+  ]
+ }
+]

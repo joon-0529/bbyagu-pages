@@ -2,11 +2,12 @@
 // 정본은 앱(main.swift)과 엔진(engine/src/rules.ts).
 // 이 파일은 main.swift 를 **같은 수치로** 옮긴 것이다 — 값을 바꾸고 싶으면
 // 여기서 바꾸지 말고 정본을 바꾼 뒤 다시 옮길 것.
-// 화면: home / matchMenu / matchSetup / pvpMenu / pvpLobby / race / match / leaderboard / records / settings
+// 화면: home / matchMenu / matchSetup / pvpMenu / pvpLobby / race / match / leaderboard / records / settings / shop
 import { DIFFICULTY, SessionState } from './rules.js';
 import { makeDuel, DUEL_LEVELS, HALF_CHANGE_MS, statHits, statEyePct, statAvgOff } from './duel.js';
 import { makeOnline, TERMS_KO, TERMS_EN } from './online.js';
 import { makePvp } from './pvp.js';
+import { STADIUMS, stadiumById, loadStadiums, drawPlate, boardRect, drawBlurredBack } from './stadium.js';
 
 // ═══ 언어 ═══
 let KO = (localStorage.getItem('appLang') ?? (navigator.language || 'ko')).startsWith('ko');
@@ -26,6 +27,9 @@ const game = {
   termsScroll: 0, termsFrom: 'settings',
   // 리더보드 v2
   lbPage: 0, lbInnings: 3, lbChaos: false, lbFriendsOnly: false,   // D98
+  // 경기장 테마 (D102) — 내가 고른 것. PvP 게스트는 pvpStadium(호스트 것)이 우선. shopSel 은 상점 커서
+  stadium: localStorage.getItem('stadium') ?? '', pvpStadium: '', shopSel: 0,
+  shopFrom: -1, shopSlideAt: 0, shopDir: 1,   // 상점 슬라이드 연출 (이전 칸 · 시작 시각 · 방향)
   lbMore: false, lbMoreOffset: 0, lbMorePage: 30,
   lbCache: {}, lbInFlight: new Set(), lbFailed: new Set(),
   myRanks: {},
@@ -62,7 +66,9 @@ const game = {
   oppAlive: true, pvpStatus: '', rematchMine: false, rematchOpp: false,
   pollGen: 0, pollFails: 0, ranked: false, matchTicket: null, matchmakeStartAt: 0, pvpSel: 0,
   // ── 친구 (D91) ──
-  friends: [], invites: [], notices: [], homeNoticeRow: -1, friendSel: 0,   // D98 friendsStatus: '', friendsPollAt: 0, pendingInviteFriendId: null,
+  friends: [], invites: [], notices: [], homeNoticeRow: -1, friendSel: 0,   // D98
+  friendsStatus: '', friendsPollAt: 0, pendingInviteFriendId: null,
+  blocks: [], blockSel: 0, blocksStatus: '',
   get canPause() {
     if (this.paused) return true;
     if (this.pvp) return false;               // 상대가 기다린다 — PvP 는 멈출 수 없다
@@ -172,8 +178,8 @@ function editSetting(row) {
       break;
     }
     case 3:       // 내 기록 삭제
-      if (!confirm(L('서버에 등록된 내 기록과 프로필을 모두 삭제할까요? 되돌릴 수 없습니다.',
-                     'Delete all my records and profile from the server? This cannot be undone.'))) break;
+      if (!confirm(L('서버에 등록된 내 기록과 프로필을 모두 삭제할까요? 별별코인과 연 구장도 함께 사라집니다. 되돌릴 수 없습니다.',
+                     'Delete all my records and profile from the server? Coins and unlocked parks are removed too. This cannot be undone.'))) break;
       online.deleteMyRecords().then(({ msg }) => alert(msg));
       break;
     case 4:       // 약관
@@ -360,6 +366,7 @@ function raceTick(now) {
             if (online.lastChallengeResult) game.challengeBeat = online.lastChallengeResult.beat === true;   // D89
           });
         } else {
+          game.onlineStatus = creditLocal(sum.homeruns * 5).slice(3);   // D103 오프라인 모드 — 완주한 판만
           if (online.enabled() && !game.challenge) {   // D94: 오프라인 판도 연결되면 리더보드에
             online.enqueue({ kind: 'race', seed: game.session.seed, offsets: game.raceOffsets.slice(),
               homeruns: sum.homeruns, maxDistance: sum.maxDistance, maxCombo: sum.maxCombo, totalAtBats: sum.totalAtBats });
@@ -443,19 +450,74 @@ function enterRace() {
     nextPitch(performance.now());
   } else if (!restoreRaceIfAny()) startSession();
 }
+// ═══ 경기장 테마 (D102) ═══
+// 웹·윈도우에는 결제가 없다 — 해제 목록(stadiumsUnlocked)은 비어 있고, ?stadium= 은 미리보기.
+// 온라인 대전은 호스트 테마를 따라가므로 잠긴 테마도 그림은 다 갖고 있다.
+const STADIUM_PREVIEW = new URLSearchParams(location.search).get('stadium');
+// 별별코인 지갑 (D103): 온라인 참여면 서버 지갑(online.wallet), 오프라인 모드면 이 기기의 지갑. 검수용 stadiumsUnlocked 는 그대로
+const STADIUM_COST = 3000;
+const localWallet = () => ({ coins: +(localStorage.getItem('coinsLocal') ?? 0), unlocked: (localStorage.getItem('unlockedLocal') ?? '').split(',').filter(Boolean) });
+const wallet = () => (online.enabled() ? online.wallet : localWallet());
+function creditLocal(n) {   // 오프라인 모드에서만 — 온라인 참여 사용자는 서버가 적립한다 (오프라인 판도 대기열로 올라간다)
+  if (online.enabled() || n <= 0) return '';
+  localStorage.setItem('coinsLocal', localWallet().coins + n);
+  return L(` · +${n} 별별코인`, ` · +${n} BB Coins`);
+}
+const stadiumUnlocked = (id) => (localStorage.getItem('stadiumsUnlocked') ?? '').split(',').includes(id) || wallet().unlocked.includes(id);
+function activeStadium() {
+  if (game.screen === 'shop') return game.shopSel > 0 ? STADIUMS[game.shopSel - 1] ?? null : null;   // 상점은 커서가 미리보기
+  if (game.pvp && game.pvpStadium) return stadiumById(game.pvpStadium);
+  const id = STADIUM_PREVIEW ?? game.stadium;
+  return id && (STADIUM_PREVIEW || stadiumUnlocked(id)) ? stadiumById(id) : null;
+}
+game.activeStadiumId = () => activeStadium()?.id ?? '';
+function shopOpen() {
+  game.shopSel = game.stadium ? STADIUMS.findIndex((t) => t.id === game.stadium) + 1 : 0;
+  game.shopFrom = -1; game.screen = 'shop'; game.menuNotice = '';
+  online.fetchWallet();   // 잔액은 서버가 정본 — 열 때마다 새로 받는다
+}
+function shopMove(dir) {   // 옆 칸으로 — 그림이 옆으로 밀려 들어온다
+  const n = STADIUMS.length + 1;
+  game.shopFrom = game.shopSel; game.shopDir = dir; game.shopSlideAt = performance.now();
+  game.shopSel = (game.shopSel + dir + n) % n; game.menuNotice = '';
+}
+async function shopSelect() {
+  const t = game.shopSel > 0 ? STADIUMS[game.shopSel - 1] : null;
+  if (t && !stadiumUnlocked(t.id)) {   // 3,000 별별코인으로 연다 — 온라인이면 서버, 오프라인 모드면 이 기기 지갑
+    const w = wallet();
+    if (w.coins < STADIUM_COST) {
+      game.menuNotice = L(`별별코인 부족 (${w.coins} / ${STADIUM_COST}) — 홈런 5 · 승리 100 · 패배 30`,
+                          `Not enough BB Coins (${w.coins} / ${STADIUM_COST}) — HR 5 · win 100 · loss 30`);
+      return;
+    }
+    if (online.enabled()) {
+      game.menuNotice = L('여는 중…', 'Unlocking…');
+      const r = await online.unlockStadium(t.id);
+      if (!r || !r.unlocked?.includes(t.id)) { game.menuNotice = r ? L('별별코인이 부족합니다', 'Not enough BB Coins') : L('서버 연결 실패', 'Server unreachable'); return; }
+    } else {
+      localStorage.setItem('coinsLocal', w.coins - STADIUM_COST);
+      localStorage.setItem('unlockedLocal', [...w.unlocked, t.id].join(','));
+    }
+  }
+  game.stadium = t ? t.id : '';
+  localStorage.setItem('stadium', game.stadium);
+  game.menuNotice = L('적용했습니다', 'Applied');
+}
 function enterHome() {
   switch (game.homeSel) {
     case 0: game.screen = 'matchMenu'; game.menuNotice = ''; break;
     case 1: enterRace(); break;
     case 2: lbOpen(); break;
     case 3: recordsOpen(); break;
-    default: game.settingsSel = 0; game.screen = 'settings'; game.menuNotice = '';
+    case 4: game.settingsSel = 0; game.screen = 'settings'; game.menuNotice = ''; break;
+    default: shopOpen();
   }
 }
 function leaveToHome() {
   if (game.screen === 'race') persistRace();   // D100
   game.paused = false; game.helpOpen = false;
   game.screen = 'home'; game.phase = 'idle'; game.menuNotice = '';
+  online.fetchWallet();   // D103 — 먼저 보고한 PvP 별별코인 등 뒤늦게 확정된 적립을 반영
 }
 function leaveMatchToHome() {
   if (game.pvp) pvp.leave(true); else leaveToHome();
@@ -502,6 +564,72 @@ function drawShareButton() {
   text(L('공유 S', 'Share S'), r.x + r.w / 2, r.y + 6, mono(11, 700), ink(0.85), 'center');
   reg({ x: r.x - 8, y: r.y - 8, w: r.w + 16, h: r.h + 16 }, 'shareResult');
 }
+// 리퀴드 글라스풍 판 (D114, 맥 drawGlass 와 같다) — 뒤 그림을 흐리게 비추고, 옅은 흰 막 + 위쪽 반사광 + 가는 흰 테두리 + 그림자
+function drawGlass(r, radius, theme, plate) {
+  const light = theme && theme.tone !== 'dark';
+  ctx.save();
+  ctx.shadowColor = `rgba(0,0,0,${light ? 0.16 : 0.32})`; ctx.shadowBlur = 18; ctx.shadowOffsetY = 4;
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; roundedRect(r.x, r.y, r.w, r.h, radius); ctx.fill();
+  ctx.restore();
+  ctx.save(); roundedRect(r.x, r.y, r.w, r.h, radius); ctx.clip();
+  drawBlurredBack(ctx, theme, plate);
+  ctx.fillStyle = `rgba(255,255,255,${light ? 0.42 : 0.10})`; ctx.fillRect(r.x, r.y, r.w, r.h);
+  const sheen = ctx.createLinearGradient(0, r.y, 0, r.y + r.h * 0.5);
+  sheen.addColorStop(0, `rgba(255,255,255,${light ? 0.30 : 0.20})`); sheen.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = sheen; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.restore();
+  ctx.strokeStyle = `rgba(255,255,255,${light ? 0.75 : 0.34})`; ctx.lineWidth = 1;
+  roundedRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, radius); ctx.stroke();
+}
+// ═══ 한국어 사용자용 bbyagu.com 홍보 (D112) — 맥 drawPromoBoard/drawPromoCard 와 1:1 ═══
+// 보일 사람: 앱 언어 한국어 + 한국(웹은 스토어 계정이 없어 한국 시간대로 본다). 검수는 ?promo=1 또는 localStorage.promoForce=1
+const PROMO_FORCE = new URLSearchParams(location.search).has('promo') || (() => { try { return localStorage.getItem('promoForce') === '1'; } catch { return false; } })();
+const showPromo = () => KO && (PROMO_FORCE || Intl.DateTimeFormat().resolvedOptions().timeZone === 'Asia/Seoul');
+const promoMark = new Image(); promoMark.src = 'themes/bbyagu-mark.png';
+const sans = (size, w = 400) => `${w} ${size}px -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif`;
+function fitFont(str, size, w, maxW, minSize) {
+  let sz = size;
+  while (textW(str, sans(sz, w)) > maxW && sz > minSize) sz -= 0.5;
+  return sans(sz, w);
+}
+// 전광판 순번 — 레이스는 홈런마다, 경기는 공수 교대마다 (공 던지는 동안은 그대로)
+const promoIndex = () => game.mode === 'race' ? (game.session?.summary().homeruns ?? 0) : game.myInnRuns.length + game.botInnRuns.length;
+function drawPromoBoard(br, line, color) {
+  const halo = textHalo; textHalo = false;
+  const ix = br.x + br.w * 0.13, iy = br.y + br.h * 0.17, iw = br.w * 0.74, ih = br.h * 0.66;
+  const topH = ih * 0.6, icon = topH * 0.92, gap = icon * 0.28;
+  const tf = fitFont('별별야구', topH * 0.74, 800, iw - icon - gap, 6);
+  const tw = textW('별별야구', tf);
+  const x0 = ix + iw / 2 - (icon + gap + tw) / 2;
+  if (promoMark.complete && promoMark.naturalWidth) ctx.drawImage(promoMark, x0, iy + (topH - icon) / 2, icon, icon);
+  ctx.font = tf; ctx.fillStyle = color; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText('별별야구', x0 + icon + gap, iy + topH / 2);
+  const sub = `${line}  ·  bbyagu.com`;
+  ctx.font = fitFont(sub, (ih - topH) * 0.66, 500, iw, 5); ctx.textAlign = 'center';
+  ctx.globalAlpha = 0.85; ctx.fillText(sub, ix + iw / 2, iy + topH + (ih - topH) / 2); ctx.globalAlpha = 1;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  textHalo = halo;
+}
+function drawPromoCard(y) {
+  const p = showPromo() ? online.promo() : null;
+  if (!p) return;
+  const halo = textHalo; textHalo = false;
+  const w = Math.min(W - 32, 420), h = 32, r = { x: (W - w) / 2, y, w, h };
+  ctx.fillStyle = ink(0.08); roundedRect(r.x, r.y, r.w, r.h, 8); ctx.fill();
+  ctx.strokeStyle = ink(0.35); ctx.lineWidth = 1; roundedRect(r.x, r.y, r.w, r.h, 8); ctx.stroke();
+  if (promoMark.complete && promoMark.naturalWidth) ctx.drawImage(promoMark, r.x + 7, r.y + h / 2 - 10, 20, 20);
+  const bt = `${p.button} ›`, bw = textW(bt, mono(11, 700)) + 16;
+  const pill = { x: r.x + r.w - bw - 6, y: r.y + h / 2 - 11, w: bw, h: 22 };
+  ctx.fillStyle = ink(0.88); roundedRect(pill.x, pill.y, pill.w, pill.h, 6); ctx.fill();
+  ctx.font = mono(11, 700); ctx.fillStyle = bg(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(bt, pill.x + pill.w / 2, pill.y + pill.h / 2 + 0.5);
+  const tx = r.x + 36;
+  ctx.font = fitFont(p.cardText, 13, 600, pill.x - 8 - tx, 9); ctx.fillStyle = ink(0.92); ctx.textAlign = 'left';
+  ctx.fillText(p.cardText, tx, r.y + h / 2 + 0.5);
+  ctx.textBaseline = 'top';
+  reg(r, 'openPromo');
+  textHalo = halo;
+}
 // 방 코드 복사·공유 (D87) — 브라우저 공유 시트가 있으면 그것, 없으면 클립보드
 async function shareRoomCode() {
   const text = L(`별별야구 PvP 방 코드 ${game.roomCode}\n링크로 바로 참가: ${SHARE_BASE}?room=${game.roomCode}`,
@@ -545,15 +673,15 @@ function startDuel() {
 }
 // duel.js 의 saveMatchResult 가 부른다 — 지옥 봇전만 온라인 보드 제출
 game.onMatchResult = (myRuns, botRuns) => {
-  if (game.pvp) {                             // 랭크전 결과 보고 — 양쪽 다 보고, 서버가 거울상일 때 확정 (D27)
-    if (game.ranked) online.submitPvpResult(game.roomCode, game.playerId, myRuns, botRuns)
+  if (game.pvp) {                             // 결과 보고 — 양쪽 다 보고, 서버가 거울상일 때 확정 (D27). 친선전도 별별코인 때문에 보고 (D103)
+    online.submitPvpResult(game.roomCode, game.playerId, myRuns, botRuns, game.ranked)
       .then((msg) => { if (msg) game.pvpStatus = msg; });
     return;
   }
-  if (game.duelLevel !== '지옥') return;
-  game.onlineStatus = '';
-  online.submitDuel({
-    innings: game.dInnT, myRuns, botRuns, chaos: game.physChaos,
+  game.onlineStatus = creditLocal(myRuns > botRuns ? 100 : 30).slice(3);   // D103 오프라인 모드
+  if (!online.enabled()) return;
+  online.submitDuel({   // 보드는 지옥만, 별별코인은 모든 난이도 (D103)
+    level: game.duelLevel, innings: game.dInnT, myRuns, botRuns, chaos: game.physChaos,
     durationMs: Math.round(performance.now() - game.duelStartAt),
   }).then((msg) => { game.onlineStatus = msg; });
 };
@@ -569,7 +697,7 @@ const SHARE_BASE = 'https://bbyagu.com/game/play';   // 공유 링크 기준 (D8
 const SWING_MS = 150;
 // D84 — 축포는 공이 담장을 넘는 순간부터. 타구 애니메이션 900ms 에서 담장 통과 시각 역산 (맥 cheerDelay)
 export function cheerDelay(dist, hr, line) {
-  return hr ? (900 * line) / Math.min(Math.max(dist, line), 155) : (dist > 0 ? 900 : 0);
+  return hr ? (900 * line) / Math.min(Math.max(dist, line), 155 * line / 120) : (dist > 0 ? 900 : 0);   // 필드 끝 = 155×선/120 (D117)
 }
 const easeOut = (t) => 1 - (1 - t) * (1 - t);
 const easeIn = (t) => t * t;
@@ -650,11 +778,21 @@ let isNight = matchMedia('(prefers-color-scheme: dark)').matches;
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
   isNight = e.matches; syncPageTheme();
 });
-const bg = () => (isNight ? 'rgb(23,23,23)' : 'rgb(255,255,255)');
-const ink = (a = 1) => (isNight ? `rgba(235,235,235,${a})` : `rgba(0,0,0,${a})`);
-const RED = () => (isNight ? 'rgba(255,69,58,' : 'rgba(255,59,48,');
-const ORANGE = () => (isNight ? 'rgba(255,159,10,' : 'rgba(255,149,0,');
-const GREEN = () => (isNight ? 'rgba(48,209,88,' : 'rgba(52,199,89,');
+// 배경판이 켜져 있으면 그림 톤이 OS 라이트/다크를 덮는다 — 밝은 창에 어두운 그림을 깔면 검은 글자가 사라진다
+let plateTone = null;
+const dk = () => (plateTone ? plateTone === 'dark' : isNight);
+const bg = () => (dk() ? 'rgb(23,23,23)' : 'rgb(255,255,255)');
+const ink = (a = 1) => (dk() ? `rgba(235,235,235,${a})` : `rgba(0,0,0,${a})`);
+// 혼합 명암의 경기장에서도 판독 요소가 사라지지 않게 하는 공통 이중톤.
+// 모든 기본/유료 테마에 같은 팔레트를 쓰고 배경 픽셀은 샘플링하지 않는다.
+const GAMEPLAY_DARK = 'rgb(16,24,32)';
+const GAMEPLAY_LIGHT = 'rgb(247,250,252)';
+let rimColor = null;   // 선수 테두리 빛 한 번 더 그릴 때 (D110) — 그동안 코어·키라인 모두 이 색
+const gameplayCore = () => rimColor ?? (dk() ? GAMEPLAY_LIGHT : GAMEPLAY_DARK);
+const gameplayKeyline = () => rimColor ?? (dk() ? GAMEPLAY_DARK : GAMEPLAY_LIGHT);
+const RED = () => (dk() ? 'rgba(255,69,58,' : 'rgba(255,59,48,');
+const ORANGE = () => (dk() ? 'rgba(255,159,10,' : 'rgba(255,149,0,');
+const GREEN = () => (dk() ? 'rgba(48,209,88,' : 'rgba(52,199,89,');
 const mono = (px, weight = 400) =>
   `${weight} ${px}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
 const smallFont = mono(9), hudFont = mono(12, 500);
@@ -673,6 +811,33 @@ function fitCanvas() {
 addEventListener('resize', fitCanvas);
 fitCanvas();
 
+// Canvas 는 stroke() 뒤에도 current path 를 유지한다. 같은 포즈 path 를
+// 넓은 반대 톤→기존 굵기 core 순으로 두 번 그려 네이티브와 동일한 실루엣을 만든다.
+function strokeGameplayPath(coreWidth, keylineWidth) {
+  ctx.strokeStyle = gameplayKeyline(); ctx.lineWidth = keylineWidth; ctx.stroke();
+  ctx.strokeStyle = gameplayCore(); ctx.lineWidth = coreWidth; ctx.stroke();
+}
+
+function fillGameplaySilhouetteDisc(x, y, radius, keyline) {
+  ctx.fillStyle = gameplayKeyline();
+  ctx.beginPath(); ctx.arc(x, y, radius + keyline, 0, 7); ctx.fill();
+  ctx.fillStyle = gameplayCore();
+  ctx.beginPath(); ctx.arc(x, y, radius, 0, 7); ctx.fill();
+}
+
+// 공의 외경은 기존 radius 그대로다. 기존 원 안에 어두운 rim과 밝은 core 를 넣는다.
+function fillGameplayBall(x, y, radius) {
+  if (plateTone) {   // 밝은 그림(달·설원) 위에서 공이 묻힌다는 제보 — 외경은 그대로, 바깥에 옅은 어두운 후광
+    ctx.fillStyle = 'rgba(16,24,32,0.42)';
+    ctx.beginPath(); ctx.arc(x, y, radius + 3, 0, 7); ctx.fill();
+  }
+  ctx.fillStyle = GAMEPLAY_DARK;
+  ctx.beginPath(); ctx.arc(x, y, radius, 0, 7); ctx.fill();
+  const inner = Math.max(1.5, radius - 1.1);
+  ctx.fillStyle = GAMEPLAY_LIGHT;
+  ctx.beginPath(); ctx.arc(x, y, inner, 0, 7); ctx.fill();
+}
+
 function drawBatter(x, y, s, now) {
   const P = batterPose(now);
   const hipX = x - 2 * s + P.hip * s;
@@ -681,9 +846,8 @@ function drawBatter(x, y, s, now) {
   const neck = [neckX, y - 38.5 * s];
   const hip = [hipX, y - 19 * s];
   const hand = [x + 9 * s + P.hx * s, y - 33 * s + P.hy * s];
-  ctx.strokeStyle = ctx.fillStyle = ink(0.9);
-  ctx.lineWidth = 2.1 * s; ctx.lineCap = ctx.lineJoin = 'round';
-  ctx.beginPath(); ctx.arc(head[0], head[1], 5.6 * s, 0, 7); ctx.fill();
+  ctx.lineCap = ctx.lineJoin = 'round';
+  fillGameplaySilhouetteDisc(head[0], head[1], 5.6 * s, 1.0 * s);
   ctx.beginPath();
   ctx.moveTo(...neck);
   ctx.quadraticCurveTo(hip[0] - 2 * s, y - 30 * s, ...hip);
@@ -695,7 +859,7 @@ function drawBatter(x, y, s, now) {
   ctx.lineTo(x + 9 * s + P.stride * s, y);
   ctx.moveTo(neck[0], neck[1] + 2 * s); ctx.lineTo(...hand);
   ctx.moveTo(neck[0] - 1 * s, neck[1] + 6 * s); ctx.lineTo(...hand);
-  ctx.stroke();
+  strokeGameplayPath(2.1 * s, 4.1 * s);
   ctx.save();
   ctx.translate(...hand); ctx.rotate(P.bat);
   const len = 30 * s;
@@ -706,8 +870,10 @@ function drawBatter(x, y, s, now) {
   ctx.quadraticCurveTo(len + 3.2 * s, 0, len, 3.2 * s);
   ctx.quadraticCurveTo(len * 0.92, 3.5 * s, len * 0.45, 2.2 * s);
   ctx.lineTo(0, 1.4 * s);
-  ctx.closePath(); ctx.fill();
-  ctx.beginPath(); ctx.arc(-1.6 * s, 0, 2.1 * s, 0, 7); ctx.fill();
+  // 열린 상태로 stroke 해 손잡이 끝의 가로선을 없앤다. fill 은 자동으로 닫힌다.
+  ctx.strokeStyle = gameplayKeyline(); ctx.lineWidth = 2.0 * s; ctx.stroke();
+  ctx.fillStyle = gameplayCore(); ctx.fill();
+  fillGameplaySilhouetteDisc(-1.6 * s, 0, 2.1 * s, 1.0 * s);
   ctx.restore();
 }
 function drawPitcher(x, y, s, now) {
@@ -715,10 +881,9 @@ function drawPitcher(x, y, s, now) {
   const dx = -P.lean * 30 * s;
   const sh = [x - 1 * s + dx, y - 34 * s];
   const hip = [x + dx * 0.4, y - 20 * s];
-  ctx.strokeStyle = ctx.fillStyle = ink(0.9);
-  ctx.lineWidth = 2 * s; ctx.lineCap = ctx.lineJoin = 'round';
+  ctx.lineCap = ctx.lineJoin = 'round';
   const headY = y - 42 * s + Math.abs(P.lean) * 5 * s;
-  ctx.beginPath(); ctx.arc(sh[0], headY, 5 * s, 0, 7); ctx.fill();
+  fillGameplaySilhouetteDisc(sh[0], headY, 5 * s, 1.0 * s);
   ctx.beginPath();
   ctx.moveTo(sh[0], y - 36.5 * s); ctx.lineTo(...hip);
   ctx.moveTo(...hip); ctx.lineTo(x + 7 * s, y);
@@ -729,12 +894,14 @@ function drawPitcher(x, y, s, now) {
   ctx.moveTo(sh[0], sh[1] + 1 * s); ctx.lineTo(...glove);
   ctx.moveTo(...sh);
   ctx.lineTo(sh[0] - Math.cos(P.arm) * 13 * s, sh[1] - Math.sin(P.arm) * 13 * s);
-  ctx.stroke();
+  strokeGameplayPath(2.0 * s, 4.0 * s);
 }
 
+let textHalo = false;   // 배경판 위 플레이·상점 화면: 어두운 띠 대신 글자 외곽선으로 대비 (D107)
 function text(str, x, y, font, color, align = 'left') {
   ctx.font = font; ctx.fillStyle = color;
   ctx.textAlign = align; ctx.textBaseline = 'top';
+  if (textHalo) { ctx.strokeStyle = gameplayKeyline(); ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.strokeText(str, x, y); ctx.fillStyle = gameplayCore(); }
   ctx.fillText(str, x, y);
   ctx.textAlign = 'left';
 }
@@ -756,19 +923,50 @@ const reg = (r, action) => regions.push({ ...r, action });
 // ═══ 그리기 본체 ═══
 function draw(now) {
   regions = [];
+  const theme = activeStadium();
+  plateTone = theme?.tone ?? null;
   ctx.fillStyle = bg();
   ctx.fillRect(0, 0, W, H);
 
   const g = H - 34;
-  const hudY = Math.max(10, g - 158);
+  // 필드 위 기준선 — 메뉴 줄·홈런 궤적 높이는 늘 이 값 (D108: HUD 를 올리면서 메뉴·궤적까지 같이 올라가 버그가 났다)
+  const fieldTop = Math.max(10, g - 158);
+  // 배경판 위 **플레이 화면**에서만 HUD 를 위쪽 빈 하늘로 보낸다 (관중석 위 글자가 안 읽힌다는 제보)
+  const playing = game.screen === 'race' || game.screen === 'match';
+  // 세로로 긴 화면(4:3)은 HUD 가 천장에 붙어 보였다 — 16:9 이하 0, 4:3 에서 28 내린다 (D113, 맥과 같은 식)
+  const tallShift = Math.max(0, Math.min(1, (1.78 - W / H) / 0.45)) * 28;
+  const hudY = theme && playing ? 40 + tallShift : fieldTop;
+  // 경기장 배경판 (D102) — 전용 화면(리더보드·기록·온보딩·약관)만 빼고 어디서나. 메뉴는 반투명 판을 덮어 글자를 살린다
+  let plate = null;
+  // 그림 속 담장 끝을 게임 담장에 맞춘다 (D108) — 아래 fenceX 와 같은 식을 미리 계산
+  const vcfg0 = game.mode === 'duel' ? duel.dCfg() : cfg;
+  const hitX0 = W * 0.13 + 34;
+  const span = 155 * vcfg0.homerunLine / 120;   // D117: 홈런선이 어디든 화면에선 같은 자리 (main.swift 와 동일)
+  const fenceAnchor = hitX0 + (Math.min(vcfg0.homerunLine, span) / span) * (W * 0.96 - hitX0) + 7;
+  if (!['leaderboard', 'records', 'onboard', 'terms'].includes(game.screen)) {
+    const sliding = game.screen === 'shop' && game.shopFrom >= 0 && now - game.shopSlideAt < 280;
+    if (!sliding) game.shopFrom = -1;
+    if (sliding) {   // 상점: 이전 그림이 밀려 나가고 새 그림이 들어온다
+      const k = easeOut(Math.min(1, (now - game.shopSlideAt) / 280)), d = game.shopDir;
+      const fromT = game.shopFrom > 0 ? STADIUMS[game.shopFrom - 1] : null;
+      if (fromT) drawPlate(ctx, fromT, W, H, g, -d * W * k, fenceAnchor);
+      if (theme) plate = drawPlate(ctx, theme, W, H, g, d * W * (1 - k), fenceAnchor);
+    } else if (theme) plate = drawPlate(ctx, theme, W, H, g, 0, fenceAnchor);
+  }
   const batX = W * 0.13;
   const hitX = batX + 34, hitY = g - 35;
   const pitX = W * 0.40;
   const fieldEnd = W * 0.96;
   // D78: 비거리 상한 없음 — 그림은 155m 까지만 (main.swift 와 동일)
-  const x_of = (m) => hitX + (Math.min(m, 155) / 155) * (fieldEnd - hitX);
+  const x_of = (m) => hitX + (Math.min(m, span) / span) * (fieldEnd - hitX);
   const tickColor = ink(0.45);
-  const inMenus = ['home', 'matchMenu', 'matchSetup', 'pvpMenu', 'pvpLobby', 'friends', 'settings'].includes(game.screen);
+  const inMenus = ['home', 'matchMenu', 'matchSetup', 'pvpMenu', 'pvpLobby', 'friends', 'blocks', 'settings'].includes(game.screen);
+  const inShop = game.screen === 'shop';   // 상점은 필드를 그대로 그려 미리보기로 쓴다 (선수도 플레이 위치)
+  if (plate && inMenus) {
+    ctx.globalAlpha = 0.66;
+    ctx.fillStyle = bg(); ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
+  }
+  textHalo = !!plate && !inMenus;   // 띠 대신 글자 외곽선 (D107)
   const vcfg = game.mode === 'duel' ? duel.dCfg() : cfg;
 
   // ── 일시정지 + ? 버튼 (레이스·경기 진행 중에만) ──
@@ -776,6 +974,7 @@ function draw(now) {
       && game.phase !== 'idle' && game.phase !== 'ended') {
     const r = { x: W - 34, y: 10, w: 24, h: 24 };
     reg(r, 'pauseToggle');
+    if (plate) { ctx.globalAlpha = 0.6; ctx.fillStyle = bg(); ctx.beginPath(); ctx.arc(r.x + 12, r.y + 12, 12, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }   // 밝은 하늘 위 (D108)
     ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
     ctx.beginPath(); ctx.arc(r.x + 12, r.y + 12, 12, 0, 7); ctx.stroke();
     ctx.fillStyle = ink(0.7);
@@ -791,6 +990,7 @@ function draw(now) {
     }
     const h = { x: W - 64, y: 10, w: 24, h: 24 };
     reg(h, 'helpToggle');
+    if (plate) { ctx.globalAlpha = 0.6; ctx.fillStyle = bg(); ctx.beginPath(); ctx.arc(h.x + 12, h.y + 12, 12, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }   // 밝은 하늘 위 (D108)
     ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
     ctx.beginPath(); ctx.arc(h.x + 12, h.y + 12, 12, 0, 7); ctx.stroke();
     text('?', h.x + 12, h.y + 5, mono(14, 700), ink(0.7), 'center');
@@ -798,6 +998,7 @@ function draw(now) {
     const rs = { x: W - 94, y: 10, w: 24, h: 24 };
     if (!game.pvp) {
     reg(rs, 'restart');
+    if (plate) { ctx.globalAlpha = 0.6; ctx.fillStyle = bg(); ctx.beginPath(); ctx.arc(rs.x + 12, rs.y + 12, 12, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }   // 밝은 하늘 위 (D108)
     ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
     ctx.beginPath(); ctx.arc(rs.x + 12, rs.y + 12, 12, 0, 7); ctx.stroke();
     ctx.strokeStyle = ink(0.7); ctx.lineWidth = 1.6;
@@ -815,7 +1016,7 @@ function draw(now) {
   if (game.screen === 'terms') { drawTermsScreen(); return; }
   // ═══ 메뉴 화면들 ═══
   if (inMenus || game.screen === 'settings') {
-    drawMenus(hudY, g, now);
+    drawMenus(fieldTop, g, now);
     return;
   }
 
@@ -829,67 +1030,104 @@ function draw(now) {
   }
 
   // ── 담장 + 관중석 + 전광판 + 홈플레이트 ──
-  const fenceX = x_of(vcfg.homerunLine), FH = 44;
-  ctx.strokeStyle = ink(0.25);
-  ctx.beginPath(); ctx.arc(hitX - 6, g, 30, 0, Math.PI, false); ctx.stroke();
-  ctx.strokeStyle = ink(0.15);
-  ctx.beginPath();
-  for (let i = 0; i < 3; i++) {
-    const y0 = g - 14 - i * 12;
-    const x0 = fenceX + 12 + i * 10;
-    ctx.moveTo(x0, y0); ctx.lineTo(W - 10, y0);
-    ctx.moveTo(x0, y0); ctx.lineTo(x0, y0 + 8);
+  const fenceX = x_of(vcfg.homerunLine);
+  // 담장 높이 (D110) — 그림 속 담장 꼭대기에 기둥을 맞춘다 (기본 구장은 44). 18~110 으로 묶어 어떤 화면에서도 무너지지 않게
+  const FH = plate && theme.wallTop
+    ? Math.min(110, Math.max(18, g - (plate.dy + theme.wallTop * plate.ph * plate.s))) : 44;
+  if (plate && theme.dirt) drawInfieldDirt(theme, hitX, pitX, g);   // D110 흙·분필 — 타석 호 대신
+  if (plate) {   // (배경판 위에서는 흙 타원이 타석을 대신한다 — 호는 그리지 않음)
+  } else {
+    ctx.strokeStyle = ink(0.25);
+    ctx.beginPath(); ctx.arc(hitX - 6, g, 30, 0, Math.PI, false); ctx.stroke();
   }
-  ctx.stroke();
-  ctx.fillStyle = ink(0.06);
-  ctx.fillRect(fenceX, g - FH, 7, FH);
-  ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
-  ctx.beginPath();
-  ctx.moveTo(fenceX, g); ctx.lineTo(fenceX, g - FH);
-  ctx.lineTo(fenceX + 7, g - FH); ctx.lineTo(fenceX + 7, g);
-  ctx.stroke();
-  ctx.strokeStyle = RED() + '0.75)'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(fenceX - 1, g - FH); ctx.lineTo(fenceX + 8, g - FH); ctx.stroke();
-  text(`${vcfg.homerunLine}m`, fenceX - 26, g - FH + 4, smallFont, tickColor);
+  if (!plate) {   // 계단식 관중석 — 배경판에는 그림 관중석이 있다
+    ctx.strokeStyle = ink(0.15);
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) {
+      const y0 = g - 14 - i * 12;
+      const x0 = fenceX + 12 + i * 10;
+      ctx.moveTo(x0, y0); ctx.lineTo(W - 10, y0);
+      ctx.moveTo(x0, y0); ctx.lineTo(x0, y0 + 8);
+    }
+    ctx.stroke();
+  }
+  if (plate) {
+    // 배경판 위에서는 그림 담장과 별개인 홈런선 기둥이 묻힌다 — 선수·공과 같은 이중톤으로 세운다 (D102 실기기 제보)
+    ctx.fillStyle = gameplayKeyline(); ctx.fillRect(fenceX - 2, g - FH - 2, 11, FH + 2);
+    ctx.fillStyle = gameplayCore(); ctx.fillRect(fenceX, g - FH, 7, FH);
+    ctx.strokeStyle = gameplayKeyline(); ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(fenceX - 3, g - FH); ctx.lineTo(fenceX + 10, g - FH); ctx.stroke();
+    ctx.strokeStyle = RED() + '0.95)'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(fenceX - 3, g - FH); ctx.lineTo(fenceX + 10, g - FH); ctx.stroke();
+    text(`${vcfg.homerunLine}m`, fenceX - 28, g - FH + 4, smallFont, ink(0.85));   // 할로가 대비를 잡는다
+  } else {
+    ctx.fillStyle = ink(0.06);
+    ctx.fillRect(fenceX, g - FH, 7, FH);
+    ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.moveTo(fenceX, g); ctx.lineTo(fenceX, g - FH);
+    ctx.lineTo(fenceX + 7, g - FH); ctx.lineTo(fenceX + 7, g);
+    ctx.stroke();
+    ctx.strokeStyle = RED() + '0.75)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(fenceX - 1, g - FH); ctx.lineTo(fenceX + 8, g - FH); ctx.stroke();
+    text(`${vcfg.homerunLine}m`, fenceX - 26, g - FH + 4, smallFont, tickColor);
+  }
 
   const bbw = Math.min(168, Math.max(88, W - 10 - (fenceX + 18)));
   const bbx = Math.min(fenceX + 18, W - 10 - bbw);
-  if (bbx > hitX + 40) {
-    const br = { x: bbx, y: g - 110, w: bbw, h: 42 };
-    ctx.strokeStyle = ink(0.22); ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(br.x + 18, br.y + br.h); ctx.lineTo(br.x + 18, g - 38);
-    ctx.moveTo(br.x + br.w - 18, br.y + br.h); ctx.lineTo(br.x + br.w - 18, g - 38);
-    ctx.stroke();
-    ctx.fillStyle = ink(0.05); ctx.fillRect(br.x, br.y, br.w, br.h);
-    ctx.strokeStyle = ink(0.3); ctx.lineWidth = 1.2;
-    ctx.strokeRect(br.x, br.y, br.w, br.h);
+  const pb = plate ? boardRect(theme, plate) : null;   // 그림 속 빈 전광판 (D102)
+  if (pb ? pb.x > hitX + 40 && pb.x + pb.w <= W + 2 : bbx > hitX + 40) {
+    const br = pb ?? { x: bbx, y: g - 110, w: bbw, h: 42 };
+    if (!pb) {
+      ctx.strokeStyle = ink(0.22); ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(br.x + 18, br.y + br.h); ctx.lineTo(br.x + 18, g - 38);
+      ctx.moveTo(br.x + br.w - 18, br.y + br.h); ctx.lineTo(br.x + br.w - 18, g - 38);
+      ctx.stroke();
+      ctx.fillStyle = ink(0.05); ctx.fillRect(br.x, br.y, br.w, br.h);
+      ctx.strokeStyle = ink(0.3); ctx.lineWidth = 1.2;
+      ctx.strokeRect(br.x, br.y, br.w, br.h);
+    }
     const board = online.adBoardRemote ?? L('별별야구', 'BB Baseball');   // 기본 문구는 언어를 따른다 (D85)
-    if (online.adBoardImg) {
+    const promo = !online.adBoardImg && showPromo() ? online.promo() : null;
+    if (promo && promo.board.length) {
+      // 한국어 사용자: bbyagu.com 홍보 (D112). 후원 그림이 있으면 그게 먼저
+      drawPromoBoard(br, promo.board[promoIndex() % promo.board.length],
+                     pb ? (theme.boardDark ? 'rgba(255,240,205,0.92)' : 'rgba(40,40,40,0.8)') : ink(0.7));
+    } else if (online.adBoardImg) {
       // 그림 전광판 (D76) — 판 안쪽에 비율 유지
       const img = online.adBoardImg, iw = br.w - 10, ih = br.h - 10;
       const s = Math.min(iw / img.width, ih / img.height);
       const w = img.width * s, h = img.height * s;
       ctx.drawImage(img, br.x + br.w / 2 - w / 2, br.y + br.h / 2 - h / 2, w, h);
     } else if (textW(board, mono(15, 700)) < br.w - 8) {
-      text(board, br.x + br.w / 2, br.y + br.h / 2 - 8, mono(15, 700), ink(0.45), 'center');
+      // 그림 전광판은 판 색이 테마마다 달라 잉크 대신 어두운 고정색 (판은 전부 밝은 미색·회색)
+      text(board, br.x + br.w / 2, br.y + br.h / 2 - 8, mono(15, 700), pb ? (theme.boardDark ? 'rgba(255,240,205,0.92)' : 'rgba(40,40,40,0.8)') : ink(0.45), 'center');
     }
   }
-  ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  ctx.moveTo(hitX + 8, g + 2); ctx.lineTo(hitX + 8, g + 8);
-  ctx.lineTo(hitX - 1, g + 8); ctx.lineTo(hitX - 8, g + 5);
-  ctx.lineTo(hitX - 1, g + 2); ctx.closePath(); ctx.stroke();
+  const plateShape = () => {
+    ctx.beginPath();
+    ctx.moveTo(hitX + 8, g + 2); ctx.lineTo(hitX + 8, g + 8);
+    ctx.lineTo(hitX - 1, g + 8); ctx.lineTo(hitX - 8, g + 5);
+    ctx.lineTo(hitX - 1, g + 2); ctx.closePath();
+  };
+  if (plate) {   // 홈플레이트 — 이중톤 채움 (가시성 제보)
+    plateShape(); ctx.fillStyle = gameplayKeyline(); ctx.fill();
+    ctx.strokeStyle = gameplayKeyline(); ctx.lineWidth = 3; plateShape(); ctx.stroke();
+    ctx.strokeStyle = gameplayCore(); ctx.lineWidth = 1.2; plateShape(); ctx.stroke();
+  } else {
+    ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.2; plateShape(); ctx.stroke();
+  }
 
 
   // ── 판정 존 (경기 모드 전용 — 변화구 기준 고정, 구종 누설 방지) ──
-  if (game.mode === 'duel' && game.phase !== 'idle') {
+  if (game.mode === 'duel' && game.phase !== 'idle' && !inShop) {
     const zf = duel.lvl().breakFlight;
     const pxms = (pitX - 15 - hitX) / zf;
     const wG = Math.min(48, vcfg.thresholds.great * pxms);
     const wP = Math.min(wG, vcfg.thresholds.perfect * pxms);
     const zh = 30;
-    ctx.fillStyle = GREEN() + (isNight ? '0.22)' : '0.15)');
+    ctx.fillStyle = GREEN() + (dk() ? '0.22)' : '0.15)');
     ctx.fillRect(hitX - wP, hitY - zh / 2, wP * 2, zh);
     ctx.strokeStyle = ink(0.45); ctx.lineWidth = 1.3;
     ctx.strokeRect(hitX - wG, hitY - zh / 2, wG * 2, zh);
@@ -902,8 +1140,14 @@ function draw(now) {
 
   // ── HUD ──
   const sum = game.session.summary();
-  if (game.mode === 'duel') {
+  if (inShop) {
+    // 상점은 HUD 대신 제목 띠 (아래 drawShop)
+  } else if (game.mode === 'duel') {
     if (game.phase !== 'idle' && game.phase !== 'ended') {
+      if (plate) {   // 스코어보드는 그림 위에서 안 읽힌다 — 유리판 위에 (D114, 예전 진한 카드는 "검은 판" 이 튀었다)
+        drawGlass({ x: 10, y: hudY - 34, w: Math.min(W - 112, 430), h: 100 }, 16, theme, plate);
+        textHalo = false;   // 판 안은 할로 불필요
+      }
       drawDuelScoreboard(hudY);
       const warn = game.pvp && !game.oppAlive ? L(' · 상대 연결 불안정', ' · opponent connection unstable') : '';
       const status = game.pvp && game.pvpStatus ? ` · ${game.pvpStatus}` : '';
@@ -911,6 +1155,7 @@ function draw(now) {
         ? L('일시정지 — P 재개 · Esc 홈', 'Paused — P resume · Esc home')
         : game.judgeText + warn + status;
       if (note) text(note, 18, hudY + 46, hudFont, ink(0.9));
+      textHalo = !!plate;
     }
   } else {
     const lines =
@@ -934,6 +1179,17 @@ function draw(now) {
   }
 
   // ── 캐릭터 ──
+  if (plate) {   // D110 발밑 그림자 + 장면 광원색 테두리 빛 (배경판 위에서만)
+    const ld = theme.lightDir ?? [-1, -1];
+    footShadow(batX - 1 - ld[0] * 3, g + 1, 16);
+    footShadow(pitX + 1 - ld[0] * 3, g + 1, 17);
+    if (theme.light) {
+      rimColor = hexA(theme.light, 0.6);
+      ctx.save(); ctx.translate(ld[0] * 1.2, ld[1] * 1.2);
+      drawBatter(batX, g, 1.02, now); drawPitcher(pitX, g, 0.98, now);
+      ctx.restore(); rimColor = null;
+    }
+  }
   drawBatter(batX, g, 1.02, now);
   drawPitcher(pitX, g, 0.98, now);
 
@@ -993,7 +1249,7 @@ function draw(now) {
   }
 
   // ── 타구 궤적 ──
-  if (game.fly) drawFly(hudY, g, hitX, hitY, x_of, now);
+  if (game.fly) drawFly(fieldTop, g, hitX, hitY, x_of, now, pb);   // 궤적 높이는 HUD 위치와 무관 (D108) · pb = 착지 글자가 피할 전광판
   // ── 플레이 중 축포 — 레이스 홈런·경기 내 득점 (D72) ──
   if (game.cheerAt > 0 && game.phase !== 'ended') drawFireworks(20, now - game.cheerAt, true, H);   // 관중석 위 하늘 (D86)
 
@@ -1006,25 +1262,101 @@ function draw(now) {
   if (game.mode === 'duel' && game.screen === 'match' && game.ranked && game.matchedAt > 0) drawMatched(now - game.matchedAt);
   if (game.mode === 'duel' && game.phase === 'ended') drawDuelOver(now);
 
+  if (inShop) drawShop(now);
   // ── 조작 안내 오버레이 — 항상 맨 위 ──
   if (game.helpOpen) drawHelp();
+}
+
+// ═══ 배경판 위 지면 소품 (D110, 야구장 사진 참고) ═══
+// 홈·마운드 흙은 원근으로 납작한 타원. 가장자리는 반투명 한 겹을 더 깔아 잔디와 섞이고, 타석은 흰 분필 상자
+function drawInfieldDirt(theme, hitX, pitX, g) {
+  const a = theme.dirtA ?? 1;
+  const blob = (cx, cy, rx, ry, col) => {
+    ctx.fillStyle = col;
+    ctx.globalAlpha = a * 0.45; ctx.beginPath(); ctx.ellipse(cx, cy, rx + 3, ry + 1.5, 0, 0, 7); ctx.fill();
+    ctx.globalAlpha = a; ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, 7); ctx.fill();
+  };
+  blob(hitX - 12, g + 3, 46, 12, theme.dirt);                 // 홈 흙 (타자·홈플레이트를 감싼다)
+  blob(pitX, g + 2, 28, 8, theme.dirt);                       // 마운드
+  ctx.globalAlpha = a * 0.35; ctx.fillStyle = '#FFFFFF';      // 마운드 꼭대기 — 햇빛에 마른 밝은 흙
+  ctx.beginPath(); ctx.ellipse(pitX, g + 0.5, 15, 3.5, 0, 0, 7); ctx.fill();
+  ctx.globalAlpha = a * 0.9; ctx.fillStyle = '#F4F1EA';       // 투수판
+  ctx.fillRect(pitX - 5, g - 0.5, 10, 1.6);
+  // 배터 박스는 뺐다 (D115 사용자 결정) — 옆에서 보는 화면에선 홈플레이트 좌우가 아니라 나란히 놓여 어색했다
+  ctx.globalAlpha = 1;
+}
+function footShadow(cx, y, rx) {   // 부드러운 접지 그림자 — 세 겹
+  ctx.fillStyle = 'rgba(10,14,20,1)';
+  for (const [k, al] of [[1, 0.10], [0.75, 0.12], [0.5, 0.14]]) {
+    ctx.globalAlpha = al; ctx.beginPath(); ctx.ellipse(cx, y, rx * k, rx * k * 0.22, 0, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+// 별별코인이 적힌 글에는 단어 앞에 로고 야구공을 그린다 (사용자 요청) — 단어 앞 두 칸을 비우고 그 자리에 공
+function textCoins(str, x, y, font, color, align = 'left') {
+  const word = KO ? '별별코인' : 'BB Coins';
+  if (!str.includes(word)) { text(str, x, y, font, color, align); return; }
+  const parts = str.split(word), shown = parts.join('  ' + word);
+  const total = textW(shown, font);
+  const left = align === 'center' ? x - total / 2 : align === 'right' ? x - total : x;
+  text(shown, x, y, font, color, align);
+  const px = +(font.match(/(\d+)px/)?.[1] ?? 11);
+  let acc = '';
+  for (let i = 0; i < parts.length - 1; i++) {
+    acc += parts[i];
+    drawBallIcon(left + textW(acc, font) + px * 0.55, y + px * 0.6, px * 0.48);
+    acc += '  ' + word;
+  }
+}
+// 별별코인 아이콘 — 로고의 야구공 (흰 공 · 어두운 테두리 · 빨간 별)
+function drawBallIcon(x, y, r) {
+  ctx.fillStyle = 'rgb(247,250,252)'; ctx.strokeStyle = 'rgb(16,24,32)'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgb(220,50,40)';
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.28 : r * 0.62;
+    ctx[i ? 'lineTo' : 'moveTo'](x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+  }
+  ctx.closePath(); ctx.fill();
+}
+// ═══ 상점 (D102) — 필드 위에 제목 띠와 ◂ ▸ 만 얹는다. 그림은 draw() 가 이미 깔았다 ═══
+function drawShop() {
+  const n = STADIUMS.length + 1, t = game.shopSel > 0 ? STADIUMS[game.shopSel - 1] : null;
+  ctx.globalAlpha = 0.55; ctx.fillStyle = bg(); ctx.fillRect(0, 0, W, 78); ctx.globalAlpha = 1;   // 상점 띠는 남긴다 (플레이 화면 띠만 제거, D107)
+  const name = t ? (KO ? t.ko : t.en) : L('기본 구장', 'Basic park');
+  text(name, W / 2, 10, mono(18, 800), ink(0.95), 'center');
+  text(`${game.shopSel + 1} / ${n}`, W / 2, 34, smallFont, ink(0.5), 'center');
+  for (const [dir, x, glyph] of [[-1, 34, '◂'], [1, W - 34, '▸']]) {
+    const r = { x: x - 16, y: 10, w: 32, h: 32 };
+    ctx.strokeStyle = ink(0.5); ctx.lineWidth = 1.3;
+    ctx.beginPath(); ctx.arc(x, 26, 15, 0, 7); ctx.stroke();
+    text(glyph, x, 16, mono(16, 700), ink(0.85), 'center');
+    reg(r, dir < 0 ? 'shopPrev' : 'shopNext');
+  }
+  const current = t ? game.stadium === t.id : !game.stadium;
+  const status = t && !stadiumUnlocked(t.id) ? L(`🔒 ${STADIUM_COST.toLocaleString()} 별별코인 — Space 로 열기`, `🔒 ${STADIUM_COST.toLocaleString()} BB Coins — Space to unlock`)
+    : current ? L('✓ 지금 쓰는 구장', '✓ Current park')
+    : !t ? L('무료 · Space 적용', 'Free · Space to apply')
+    : L('Space 적용', 'Space to apply');
+  textCoins(game.menuNotice || status, W / 2, 48, smallFont, ink(0.75), 'center');
+  const bal = L(`보유 ${wallet().coins.toLocaleString()} 별별코인 · ◂ ▸ 넘기기 · 스와이프 · Esc 뒤로`, `${wallet().coins.toLocaleString()} BB Coins · ◂ ▸ browse · swipe · Esc back`);
+  textCoins(bal, W / 2, 62, smallFont, ink(0.45), 'center');
 }
 
 function drawBallAt(bx2, by, p, g) {
   ctx.fillStyle = ink(0.10 + 0.18 * p);
   ctx.beginPath(); ctx.ellipse(bx2, g + 3, 3.6, 1.3, 0, 0, 7); ctx.fill();
-  ctx.fillStyle = ink(0.8);
   const r = 2.8 + p * 1.6;
-  ctx.beginPath(); ctx.arc(bx2, by, r, 0, 7); ctx.fill();
+  fillGameplayBall(bx2, by, r);
 }
 
-function drawFly(hudY, g, hitX, hitY, x_of, now) {
+function drawFly(hudY, g, hitX, hitY, x_of, now, board = null) {
   const fly = game.fly;
   if (fly.kind === 'foul') {
     const t = Math.min(1, (now - fly.at) / 700);
     const x = hitX - 70 * t, y = hitY - 50 * t + 32 * t * t;
-    ctx.fillStyle = ink(0.8);
-    ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
+    fillGameplayBall(x, y, 3);
     return;
   }
   if (fly.kind === 'ground') {
@@ -1032,15 +1364,13 @@ function drawFly(hudY, g, hitX, hitY, x_of, now) {
     const lx = x_of(fly.dist);
     const x = hitX + (lx - hitX) * t;
     const y = g - Math.abs(Math.sin(t * Math.PI * 3)) * 8 * (1 - t) - 2;
-    ctx.fillStyle = ink(0.8);
-    ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
+    fillGameplayBall(x, y, 3);
     return;
   }
   const t = Math.min(1, (now - fly.at) / 900);
   const lx = x_of(fly.dist);
   const apex = Math.min(hitY - 8, g - 40 - (Math.min(fly.dist, 155) / 155) * (g - 34));
   const endY = fly.kind === 'hr' ? Math.max(hudY + 40, apex * 0.55 + hudY * 0.3) : g;
-  ctx.strokeStyle = ink(0.45); ctx.lineWidth = 1.25;
   ctx.beginPath();
   for (let i = 0; i <= 44; i++) {
     const u = (i / 44) * t;
@@ -1048,11 +1378,20 @@ function drawFly(hudY, g, hitX, hitY, x_of, now) {
     const y = (1 - u) ** 2 * hitY + 2 * (1 - u) * u * apex + u * u * endY;
     i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   }
-  ctx.stroke();
+  strokeGameplayPath(1.25, 3.25);
+  const tipX = hitX + (lx - hitX) * t;
+  const tipY = (1 - t) ** 2 * hitY + 2 * (1 - t) * t * apex + t * t * endY;
+  fillGameplayBall(tipX, tipY, 3.2);
   if (t >= 1) {
-    ctx.fillStyle = ink(0.8);
-    ctx.beginPath(); ctx.arc(lx, endY, 3.2, 0, 7); ctx.fill();
-    text(`${fly.dist}m`, lx + 7, endY - 5, smallFont, ink(0.85));
+    // 착지 거리 — 그림 속 전광판과 겹치면 전광판 바로 위나 아래로 비킨다 (D111, "138m" 이 전광판 글자와 겹쳤다)
+    const label = `${fly.dist}m`, lw = textW(label, smallFont), lh = 11;
+    let ly = endY - 5, lxx = lx + 7;
+    if (lxx + lw > W - 2) lxx = lx - 7 - lw;   // 화면 밖이면 공 왼쪽 (좁은 창 155m)
+    if (board && lxx < board.x + board.w + 3 && lxx + lw > board.x - 3 && ly < board.y + board.h + 3 && ly + lh > board.y - 3) {
+      const up = board.y - 3 - lh, down = board.y + board.h + 3;   // 위·아래 중 원래 자리에 가까운 쪽 (공과 떨어지지 않게)
+      ly = Math.max(2, Math.abs(up - ly) <= Math.abs(down - ly) ? up : down);
+    }
+    text(label, lxx, ly, smallFont, ink(0.85));
   }
 }
 
@@ -1079,6 +1418,7 @@ function drawMenus(hudY, g, now) {
         [L('3  리더보드', '3  Leaderboard'), game.homeSel === 2],
         [L('4  나의 기록', '4  My stats'), game.homeSel === 3],
         [L('5  설정 — 닉네임·온라인 참여·약관', '5  Settings — nickname · online · terms'), game.homeSel === 4],
+        [L('6  경기장 테마 — 상점', '6  Stadium themes — shop'), game.homeSel === 5],
       ];
       if (game.invites[0]) rows.push([L(`🎮 ${game.invites[0].from} 님의 초대 — 방 ${game.invites[0].code} · J 참가`, `🎮 Invite from ${game.invites[0].from} — room ${game.invites[0].code} · J to join`), false]);   // D91
       game.homeNoticeRow = -1;
@@ -1145,8 +1485,18 @@ function drawMenus(hudY, g, now) {
         rows.push([`${f.display} · ${seen} · ` + L(`${f.w}승 ${f.l}패`, `${f.w}W ${f.l}L`), game.friendSel === game.invites.length + i]);
       });
       rows.push([L('+  친구 추가', '+  Add a friend'), game.friendSel === game.invites.length + game.friends.length]);   // 안내 행은 뒤에 (탭 인덱스)
+      rows.push([L('⊘  차단 사용자 관리', '⊘  Manage blocked users'), game.friendSel === game.invites.length + game.friends.length + 1]);
       if (!game.friends.length && !game.invites.length) rows.push([L('아직 친구가 없습니다 — 닉네임#숫자로 추가하세요', 'No friends yet — add one by nickname#tag'), false]);
       if (game.friendsStatus) rows.push([game.friendsStatus, false]);
+      break;
+    }
+    case 'blocks': {
+      rows = game.blocks.map((b, i) => [
+        `⊘ ${b.display} · ` + L('선택하면 차단 해제', 'select to unblock'), game.blockSel === i,
+      ]);
+      rows.push([L('+  닉네임#숫자로 사용자 차단', '+  Block by nickname#tag'), game.blockSel === game.blocks.length]);
+      if (!game.blocks.length) rows.push([L('차단한 사용자가 없습니다', 'No blocked users'), false]);
+      if (game.blocksStatus) rows.push([game.blocksStatus, false]);
       break;
     }
     case 'pvpLobby':
@@ -1172,7 +1522,7 @@ function drawMenus(hudY, g, now) {
       game.lobbyCancelRow = rows.length - 1;
       break;
   }
-  const rowH = 20, rowsY = hudY;
+  const rowH = 20, rowsY = hudY, perCol = rows.length;
   rows.forEach(([label, sel], i) => {
     if (label) {
       text((sel ? '▸ ' : '  ') + label, 28, rowsY + i * rowH, hudFont, ink(sel ? 1 : 0.55));
@@ -1184,16 +1534,21 @@ function drawMenus(hudY, g, now) {
     : game.screen === 'matchMenu' ? L('1/2 선택 · Esc 뒤로', '1/2 select · Esc back')
     : game.screen === 'pvpMenu' ? L('↑↓ 항목 · ◂▸ 방 설정 · Space 확인 · Esc 뒤로', '↑↓ item · ◂▸ room setting · Space confirm · Esc back')
     : game.screen === 'pvpLobby' ? L('Esc 취소', 'Esc cancel')
-    : game.screen === 'friends' ? L('↑↓ 선택 · Enter 초대(방 생성)/참가/추가 · ⌫ 삭제 · R 새로고침 · Esc 뒤로', '↑↓ select · Enter invite (creates room)/join/add · ⌫ remove · R refresh · Esc back')
+    : game.screen === 'friends' ? (W < 600
+      ? L('↑↓ 선택 · Enter 실행 · B 차단 · Esc 뒤로', '↑↓ select · Enter action · B block · Esc back')
+      : L('↑↓ 선택 · Enter 실행 · B 차단 · ⌫ 삭제 · R 새로고침 · Esc 뒤로', '↑↓ select · Enter action · B block · ⌫ remove · R refresh · Esc back'))
+    : game.screen === 'blocks' ? (W < 600
+      ? L('↑↓ 선택 · Enter 해제/추가 · Esc 뒤로', '↑↓ select · Enter unblock/add · Esc back')
+      : L('↑↓ 선택 · Enter 차단 해제/추가 · R 새로고침 · Esc 뒤로', '↑↓ select · Enter unblock/add · R refresh · Esc back'))
     : game.screen === 'settings' ? L('1~7 또는 ↑↓+Space 로 변경 · Esc 뒤로', '1–7 or ↑↓+Space to change · Esc back')
     : L('↑↓ 항목 · ◂▸ 변경 · Space 시작 · Esc 뒤로', '↑↓ item · ◂▸ change · Space start · Esc back');
-  text(hint, 28, rowsY + Math.max(rows.length, 3) * rowH + 8, smallFont, ink(0.4));
+  text(hint, 28, rowsY + Math.max(perCol, 3) * rowH + 8, smallFont, ink(0.4));
   if (game.menuNotice) {
-    text(game.menuNotice, 28, rowsY + Math.max(rows.length, 3) * rowH + 24, smallFont, ink(0.55));
+    text(game.menuNotice, 28, rowsY + Math.max(perCol, 3) * rowH + 24, smallFont, ink(0.55));
   }
   // 메뉴는 캐릭터를 오른쪽으로 비켜 세운다 (항목과 배트가 안 겹치게)
-  drawBatter(W * 0.70, g, 1.02, now);
-  drawPitcher(W * 0.90, g, 0.98, now);
+  drawBatter(W * (W < 600 ? 0.78 : 0.70), g, 1.02, now);
+  drawPitcher(W * 0.92, g, 0.98, now);
 }
 
 // ═══ 경기 스코어보드 (main.swift drawDuelScoreboard) ═══
@@ -1316,12 +1671,13 @@ function drawRaceOver(sum, now) {
   const t = game.raceEndedAt > 0 ? now - game.raceEndedAt : 9999;
   const appear = Math.min(1, Math.max(0, t / 260));
   const rise = (1 - appear) * 10;
-  ctx.globalAlpha = 0.97;
+  ctx.globalAlpha = plateTone ? 0.84 : 0.97;   // 테마가 비쳐야 공유 이미지에도 구장이 남는다 (D102)
   ctx.fillStyle = bg(); ctx.fillRect(0, 0, W, H);
   ctx.globalAlpha = 1;
   if (game.raceNewHigh && game.raceEndedAt > 0) drawFireworks(40, t, true);
   const cx = W / 2;
-  const c = (str, y, font, color) => text(str, cx, y + rise, font, color, 'center');
+  const top = Math.min(48, Math.max(0, (H - 92 - 204) * 0.3));   // 세로 여유가 있으면 위 글자 묶음을 내린다 (D113)
+  const c = (str, y, font, color) => text(str, cx, y + (y < H - 60 ? top : 0) + rise, font, color, 'center');
   c('GAME OVER', 26, mono(26, 800), ink(0.9 * appear));
   c(L('최종 점수', 'Final score'), 74, smallFont, ink(0.5 * appear));
   c(L(`${sum.homeruns}홈런`, `${sum.homeruns} HR`), 88, mono(46, 900), ink(0.95 * appear));
@@ -1346,9 +1702,10 @@ function drawRaceOver(sum, now) {
                  `Longest ${sum.maxDistance}m · At-bats ${sum.totalAtBats}`)
     + L(` · 평균 오차 ${Math.round(sum.avgTimingError)}ms`, ` · avg error ${Math.round(sum.avgTimingError)}ms`);
   c(tail, H - 52, smallFont, ink(0.5 * appear));
+  drawPromoCard(H - 92 + rise);   // D112
   const hint = (game.onlineStatus ? game.onlineStatus + ' · ' : '')
     + L('Space 새 세션 · Esc 홈', 'Space new session · Esc home');
-  c(hint, H - 34, smallFont, ink(0.5 * appear));
+  textCoins(hint, cx, H - 34 + rise, smallFont, ink(0.5 * appear), 'center');   // "+N 별별코인" 앞에 공
   drawShareButton();
 }
 
@@ -1360,15 +1717,21 @@ function drawDuelOver(now) {
   const t = game.duelEndedAt > 0 ? now - game.duelEndedAt : 9999;
   const appear = Math.min(1, Math.max(0, t / 260));
   const rise = (1 - appear) * 10;
-  ctx.globalAlpha = 0.97;
+  ctx.globalAlpha = plateTone ? 0.84 : 0.97;
   ctx.fillStyle = bg(); ctx.fillRect(0, 0, W, H);
   ctx.globalAlpha = 1;
   if (iWon || oppWon) drawFireworks(34, t, iWon);
   const cx = W / 2;
+  // 세로 여유가 있으면 줄 간격을 최대 1.5배로 벌리고 묶음을 내린다 (D113, 맥과 같은 식). 최소 창에선 예전 그대로
+  const hintY = H - 22, promoY = hintY - 74;   // promoY: bbyagu.com 카드 자리 (재경기 버튼 위, D112)
+  const statBottom = showPromo() && online.promo() ? promoY - 6 : hintY - 8;
+  const k = Math.min(1.5, Math.max(1, (statBottom - 20) / 224));
+  const top = Math.min(48, Math.max(0, (statBottom - 224 * k) * 0.4));
+  const Y = (y) => top + y * k;
   const c = (str, y, font, color) => text(str, cx, y + rise, font, color, 'center');
   const verdictColor = iWon ? ORANGE() + `${appear})` : ink((oppWon ? 0.55 : 0.75) * appear);
-  c(iWon ? 'YOU WIN' : oppWon ? 'YOU LOSE' : 'DRAW', 18, mono(26, 800), verdictColor);
-  c(L(`나 ${my}  :  ${bot} ${oppName}`, `Me ${my}  :  ${bot} ${oppName}`), 52, mono(34, 900), ink(0.95 * appear));
+  c(iWon ? 'YOU WIN' : oppWon ? 'YOU LOSE' : 'DRAW', Y(18), mono(26, 800), verdictColor);
+  c(L(`나 ${my}  :  ${bot} ${oppName}`, `Me ${my}  :  ${bot} ${oppName}`), Y(52), mono(34, 900), ink(0.95 * appear));
   const scoreRow = (name, arr, total) => {
     const cells = [];
     for (let i = 0; i < game.dInnT; i++) {
@@ -1376,13 +1739,14 @@ function drawDuelOver(now) {
     }
     return `${name} ${cells.join(' ')} │ ${total}`;
   };
-  c(`${scoreRow(L('나', 'Me'), game.myInnRuns, my)}    ${scoreRow(oppName, game.botInnRuns, bot)}`,
-    92, smallFont, ink(0.5 * appear));
+  const myName = shortDisplay(online.nickname(), 6);   // 공유 이미지에 "나" 대신 닉네임 (사용자 요청)
+  c(`${scoreRow(myName, game.myInnRuns, my)}    ${scoreRow(oppName, game.botInnRuns, bot)}`,
+    Y(92), smallFont, ink(0.5 * appear));
 
   const risp = (s) => (s.rispAB > 0 ? `${s.rispHit}/${s.rispAB}` : '-');
   const gw = (s, won) => (won && s.gwDesc ? s.gwDesc : '-');
   const rows = [
-    ['', L('나', 'Me'), oppName],
+    ['', myName, oppName],
     [L('안타·2루·3루·홈런', '1B·2B·3B·HR'), `${m.h1}·${m.h2}·${m.h3}·${m.hr}`, `${o.h1}·${o.h2}·${o.h3}·${o.hr}`],
     [L('삼진 / 볼넷', 'K / BB'), `${m.so} / ${m.bb}`, `${o.so} / ${o.bb}`],
     [L('선구안', 'Eye'), `${statEyePct(m)}%`, `${statEyePct(o)}%`],
@@ -1391,8 +1755,8 @@ function drawDuelOver(now) {
     [L('득점권', 'RISP'), risp(m), risp(o)],
     [L('결승타', 'Game winner'), gw(m, iWon), gw(o, oppWon)],
   ];
-  const rowH = 14, statTop = 112, hintY = H - 22;
-  const fit = Math.max(0, Math.floor((hintY - 8 - statTop) / rowH));
+  const rowH = 14 * k, statTop = Y(112);
+  const fit = Math.max(0, Math.floor((statBottom - statTop) / rowH));
   const px = cx - 155;
   rows.slice(0, fit).forEach(([a, b, c2], i) => {
     const y = statTop + i * rowH + rise;
@@ -1414,7 +1778,8 @@ function drawDuelOver(now) {
   } else {
     hint = (game.onlineStatus ? game.onlineStatus + ' · ' : '') + L('Space 새 경기 · Esc 홈', 'Space new game · Esc home');
   }
-  c(hint, hintY, smallFont, ink(0.5 * appear));
+  textCoins(hint, cx, hintY + rise, smallFont, ink(0.5 * appear), 'center');
+  drawPromoCard(promoY + rise);   // D112
   drawShareButton();
 }
 
@@ -1460,11 +1825,47 @@ function drawHalfChangeCard(t) {
 
 // 맥 drawFireworks 포팅 — 좌우 가장자리 방사선 폭죽 (승리 컬러 / 패배 흑백)
 // skyH > 0 이면 플레이 중 축포(D86): 관중석 위 빈 하늘에 큰 것 하나 + 작은 것 여섯 (맥 동일)
+function hexA(hex, a) {   // '#RRGGBB' + 알파 → rgba()
+  const v = parseInt(hex.slice(1), 16);
+  return `rgba(${v >> 16},${(v >> 8) & 255},${v & 255},${a})`;
+}
 function drawFireworks(hudY, t, color, skyH = 0) {
   if (t < 0 || t >= 3500) return;
-  const palette = ['rgba(255,59,48,', 'rgba(255,149,0,', 'rgba(255,204,0,',
-                   'rgba(40,205,65,', 'rgba(255,45,85,', 'rgba(89,173,196,'];
+  const th = activeStadium();
+  // 테마마다 하늘과 대비되는 색 (D108) — 없으면 예전 색
+  const cols = th?.fw ?? ['#FF3B30', '#FF9500', '#FFCC00', '#28CD41', '#FF2D55', '#59ADC4'];
+  const line = th?.fwLine ?? null;
   const grays = [0.60, 0.38, 0.72, 0.45, 0.55, 0.32];
+  const colorAt = (b, a) => (color ? hexA(cols[b % cols.length], a) : ink(grays[b % 6] * a));
+  // 한 폭죽 — 외곽선(밝은 하늘) → 번짐(어두운 하늘) → 광선 → 끝 불똥 → 첫 150ms 중심 섬광
+  function burst(fx, fy, r, rays, lw, b, u, bt) {
+    const a = 1 - u;
+    const path = () => {
+      ctx.beginPath();
+      for (let i = 0; i < rays; i++) {
+        const ang = (i / rays) * Math.PI * 2 + b * 0.6;
+        ctx.moveTo(fx + Math.cos(ang) * r * 0.45, fy + Math.sin(ang) * r * 0.45);
+        ctx.lineTo(fx + Math.cos(ang) * r, fy + Math.sin(ang) * r);
+      }
+    };
+    ctx.lineCap = 'round';
+    if (th && line) { path(); ctx.strokeStyle = hexA(line, 0.85 * a); ctx.lineWidth = lw + 3; ctx.stroke(); }
+    else if (th) { path(); ctx.strokeStyle = colorAt(b, 0.28 * a); ctx.lineWidth = lw * 3; ctx.stroke(); }
+    path(); ctx.strokeStyle = colorAt(b, a); ctx.lineWidth = lw; ctx.stroke();
+    if (th) {
+      ctx.fillStyle = colorAt(b, a);
+      for (let i = 0; i < rays; i++) {
+        const ang = (i / rays) * Math.PI * 2 + b * 0.6;
+        ctx.beginPath(); ctx.arc(fx + Math.cos(ang) * r * 1.08, fy + Math.sin(ang) * r * 1.08, lw * 0.8, 0, 7); ctx.fill();
+      }
+      if (bt < 150) {
+        ctx.fillStyle = `rgba(255,255,255,${0.9 * (1 - bt / 150)})`;
+        ctx.beginPath(); ctx.arc(fx, fy, 3 + r * 0.25, 0, 7); ctx.fill();
+      }
+    }
+    ctx.lineCap = 'butt';
+  }
+  const big = th ? 1.25 : 1;   // 배경판 위에서는 크고 굵게
   if (skyH > 0) {
     const x0 = W * 0.46, x1 = W * 0.90, y0 = hudY + 14, y1 = skyH * 0.52;
     const bursts = [[0.50, 0.42, 58, 0], [0.18, 0.70, 20, 260], [0.82, 0.30, 22, 420],
@@ -1474,18 +1875,8 @@ function drawFireworks(hudY, t, color, skyH = 0) {
       if (bt <= 0 || bt >= 1300) return;
       const u = bt / 1300;
       const fx = x0 + (x1 - x0) * px, fy = y0 + (y1 - y0) * py;
-      ctx.strokeStyle = palette[b % 6] + (1 - u) + ')';
-      ctx.lineWidth = b === 0 ? 2.2 : 1.5;
-      const r = easeOut(u) * rad, rays = b === 0 ? 16 : 10;
-      ctx.beginPath();
-      for (let i = 0; i < rays; i++) {
-        const ang = (i / rays) * Math.PI * 2 + b * 0.6;
-        const dx = Math.cos(ang), dy = Math.sin(ang);
-        ctx.moveTo(fx + dx * r * 0.5, fy + dy * r * 0.5);
-        ctx.lineTo(fx + dx * r, fy + dy * r);
-      }
-      ctx.stroke();
-      if (b === 0) { ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(fx, fy, r * 0.72, 0, 7); ctx.stroke(); }
+      burst(fx, fy, easeOut(u) * rad * big, b === 0 ? 16 : 10, (b === 0 ? 2.2 : 1.5) * big, b, u, bt);
+      if (b === 0 && !th) { ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(fx, fy, easeOut(u) * rad * 0.72, 0, 7); ctx.stroke(); }
     });
     return;
   }
@@ -1496,18 +1887,7 @@ function drawFireworks(hudY, t, color, skyH = 0) {
     const side = b % 2 === 0 ? 0.10 : 0.74;
     const fx = W * (side + ((b * 0.071) % 0.16));
     const fy = hudY + 6 + ((b * 47) % 64);
-    const a = (1 - u) * (color ? 1 : 0.7);
-    ctx.strokeStyle = color ? palette[b % 6] + a + ')' : ink(grays[b % 6] * a);
-    ctx.lineWidth = color ? 1.6 : 1.3;
-    const r = easeOut(u) * (color ? 30 : 21);
-    ctx.beginPath();
-    for (let i = 0; i < 11; i++) {
-      const ang = (i / 11) * Math.PI * 2 + b * 0.6;
-      const dx = Math.cos(ang), dy = Math.sin(ang);
-      ctx.moveTo(fx + dx * r * 0.55, fy + dy * r * 0.55);
-      ctx.lineTo(fx + dx * r, fy + dy * r);
-    }
-    ctx.stroke();
+    burst(fx, fy, easeOut(u) * (color ? 30 : 21) * big, 11, (color ? 1.6 : 1.3) * big, b, u, bt);
   }
 }
 
@@ -1536,7 +1916,7 @@ function drawLeaderboard() {
   const listRows = Math.max(0, Math.floor((listBottom - listTop) / 14));
   const listCols = Math.max(1, Math.min(3, Math.floor((W - 80) / 200)));
   if (online.identityId) {   // D98 — 친구만 보기
-    const fr = { x: W - 110, y: 64, w: 86, h: 20 };
+    const fr = { x: W - 110, y: game.lbMore ? H - 30 : 64, w: 86, h: 20 };   // 펼친 목록은 3열이 오른쪽 끝까지 와서 아래줄로 (실기기 제보)
     ctx.strokeStyle = ink(game.lbFriendsOnly ? 0.75 : 0.4); ctx.lineWidth = 1;
     roundedRect(fr.x, fr.y, fr.w, fr.h, 5); ctx.stroke();
     reg(fr, 'lbFriends');
@@ -1682,10 +2062,10 @@ function drawOnboardScreen() {
   text(L('별별야구', 'BB Baseball'), x, 20, mono(20, 700), ink(0.92));
   const wm = textW(L('별별야구', 'BB Baseball'), mono(20, 700));
   text('The Game', x + wm + 10, 32, mono(11, 600), ink(0.42));
-  text(L('온라인 리더보드에 참여하시겠어요?', 'Join the online leaderboards?'),
+  text(L('온라인 플레이와 리더보드에 참여하시겠어요?', 'Join online play and leaderboards?'),
     x, 62, mono(14, 600), ink(0.9));
-  [L('직접 정한 닉네임과 임의 기기 식별자를 리더보드 순위 표시에 씁니다.', 'A nickname you choose and a random device ID show rankings.'),
-   L('이름·이메일은 보내지 않습니다. 기록은 언제든 지울 수 있습니다.', 'Your name and email are never sent. Delete anytime.')]
+  [L('닉네임·임의 식별자·게임/친구 활동을 온라인 기능에 씁니다.', 'Nickname, random ID, and game/friend activity enable online features.'),
+   L('계정 이름·이메일은 보내지 않습니다. 기록은 언제든 지울 수 있습니다.', 'Your account name and email are never sent. Delete anytime.')]
     .forEach((t2, i) => text(t2, x, 90 + i * 18, mono(12), ink(0.72)));
   const opts = [
     L('1  닉네임 정하고 참여', '1  Pick a nickname and join'),
@@ -1699,7 +2079,7 @@ function drawOnboardScreen() {
     text(t2, x, y, mono(13, sel ? 700 : 400), ink(sel ? 0.95 : 0.6));
     reg({ x: x - 8, y: y - 4, w: W - 2 * x + 16, h: 22 }, { row: i });
   });
-  text(L('참여하지 않아도 모든 게임 모드를 그대로 이용할 수 있습니다.', 'Every game mode works fully without joining.'),
+  text(L('참여하지 않아도 홈런레이스와 봇전은 오프라인으로 즐길 수 있습니다.', 'Home Run Race and bot games work offline without joining.'),
     x, H - 34, smallFont, ink(0.45));
 }
 
@@ -1794,6 +2174,13 @@ addEventListener('keydown', (e) => {
       else if (/^Digit[1-3]$/.test(e.code)) { game.onboardSel = +e.code[5] - 1; finishOnboard(); }
       else if (space || e.code === 'Enter') finishOnboard();
       break;
+    case 'shop': {
+      if (e.code === 'ArrowLeft' || e.code === 'ArrowUp') shopMove(-1);
+      else if (e.code === 'ArrowRight' || e.code === 'ArrowDown') shopMove(1);
+      else if (space || e.code === 'Enter') shopSelect();
+      else if (e.code === 'Escape') { game.screen = 'home'; game.menuNotice = ''; }
+      break;
+    }
     case 'settings':
       if (e.code === 'ArrowUp') game.settingsSel = (game.settingsSel + 6) % 7;
       else if (e.code === 'ArrowDown') game.settingsSel = (game.settingsSel + 1) % 7;
@@ -1840,9 +2227,9 @@ addEventListener('keydown', (e) => {
         game.screen = game.termsFrom === 'onboard' ? 'onboard' : 'settings';
       break;
     case 'home':
-      if (e.code === 'ArrowUp') game.homeSel = (game.homeSel + 4) % 5;
-      else if (e.code === 'ArrowDown') game.homeSel = (game.homeSel + 1) % 5;
-      else if (/^Digit[1-5]$/.test(e.code)) { game.homeSel = +e.code[5] - 1; enterHome(); }
+      if (e.code === 'ArrowUp') game.homeSel = (game.homeSel + 5) % 6;
+      else if (e.code === 'ArrowDown') game.homeSel = (game.homeSel + 1) % 6;
+      else if (/^Digit[1-6]$/.test(e.code)) { game.homeSel = +e.code[5] - 1; enterHome(); }
       else if (e.code === 'KeyJ') joinInvite();   // D91
       else if (e.code === 'KeyN') ackNotices();   // D98
       else if (space || e.code === 'Enter') enterHome();
@@ -1883,12 +2270,27 @@ addEventListener('keydown', (e) => {
       else if (space || e.code === 'Enter') {
         if (game.friendSel < game.invites.length) joinInvite(game.friendSel);
         else if (game.friendSel < game.invites.length + game.friends.length) inviteSelectedFriend();
-        else promptAddFriend();
+        else if (game.friendSel === game.invites.length + game.friends.length) promptAddFriend();
+        else blocksOpen();
       }
       else if (e.code === 'KeyA') promptAddFriend();
+      else if (e.code === 'KeyB') blockSelectedFriend();
       else if (e.code === 'Backspace' || e.code === 'Delete') removeSelectedFriend();
       else if (e.code === 'KeyR') refreshFriends();
       else if (e.code === 'Escape') game.screen = 'pvpMenu';
+      break;
+    }
+    case 'blocks': {
+      const n = blockRowCount();
+      if (e.code === 'ArrowUp') game.blockSel = (game.blockSel + n - 1) % n;
+      else if (e.code === 'ArrowDown') game.blockSel = (game.blockSel + 1) % n;
+      else if (space || e.code === 'Enter') {
+        if (game.blockSel < game.blocks.length) unblockSelectedUser(); else promptBlockUser();
+      }
+      else if (e.code === 'KeyA' || e.code === 'KeyB') promptBlockUser();
+      else if (e.code === 'Backspace' || e.code === 'Delete') unblockSelectedUser();
+      else if (e.code === 'KeyR') refreshBlocks();
+      else if (e.code === 'Escape') game.screen = 'friends';
       break;
     }
     case 'pvpLobby':
@@ -1940,10 +2342,17 @@ addEventListener('keydown', (e) => {
   }
 });
 
+let swipeX = null;   // 상점 스와이프 (D102)
+canvas.addEventListener('pointerup', (e) => {
+  if (swipeX === null || game.screen !== 'shop') { swipeX = null; return; }
+  const dx = e.clientX - swipeX; swipeX = null;
+  if (Math.abs(dx) > 40 / scale) shopMove(dx < 0 ? 1 : -1);
+});
 canvas.addEventListener('pointerdown', (e) => {
   // offsetX 는 합성 이벤트·변환된 캔버스에서 어긋난다 — 캔버스 화면 위치 기준으로 직접 계산
   const cr = canvas.getBoundingClientRect();
   const px = (e.clientX - cr.left) / scale, py = (e.clientY - cr.top) / scale;
+  swipeX = e.clientX;
   if (game.helpOpen) { closeHelp(); return; }
   const hitR = regions.slice().reverse().find(
     (r) => px >= r.x - 6 && px <= r.x + r.w + 6 && py >= r.y - 6 && py <= r.y + r.h + 6);
@@ -1953,11 +2362,14 @@ canvas.addEventListener('pointerdown', (e) => {
     if (a === 'restart') { if (game.screen === 'race') startSession(); else startDuel(); return; }
     if (a === 'rematch') { pvp.requestRematch(); return; }
     if (a === 'shareResult') { shareResult(); return; }
+    if (a === 'openPromo') { const u = online.promo()?.url; if (u) window.open(u, '_blank', 'noopener'); return; }   // D112
     if (a === 'pauseToggle') {
       if (game.canPause || game.paused) togglePause();
       else if (game.phase === 'pitching') game.judgeText = L('투구 중에는 멈출 수 없습니다', "Can't pause during a pitch");
       return;
     }
+    if (a === 'shopPrev') { shopMove(-1); return; }
+    if (a === 'shopNext') { shopMove(1); return; }
     if (a === 'lbPrev') { lbMove(-1); return; }
     if (a === 'lbNext') { lbMove(1); return; }
     if (a === 'lbChaos') { game.lbChaos = !game.lbChaos; lbFetch(); return; }
@@ -1967,15 +2379,21 @@ canvas.addEventListener('pointerdown', (e) => {
       const i = a.row;
       if (game.screen === 'onboard') { game.onboardSel = i; finishOnboard(); return; }
       if (game.screen === 'settings') { game.settingsSel = i; if (i <= 6) editSetting(i); return; }
-      if (game.screen === 'home') { if (i === game.homeNoticeRow) ackNotices(); else if (i === 5 && game.invites.length) joinInvite(); else { game.homeSel = i; enterHome(); } }
+      if (game.screen === 'home') { if (i === game.homeNoticeRow) ackNotices(); else if (i === 6 && game.invites.length) joinInvite(); else { game.homeSel = i; enterHome(); } }
       else if (game.screen === 'friends') {   // D91
         if (i < game.invites.length) joinInvite(i);
         else if (i < game.invites.length + game.friends.length) {
           game.friendSel = i;
           const f = game.friends[i - game.invites.length];
-          const c = window.prompt(L(`${f.display} — 1 초대(내 방 생성) · 2 삭제`, `${f.display} — 1 invite (creates my room) · 2 remove`), '1');
+          const c = window.prompt(L(`${f.display} — 1 초대(내 방 생성) · 2 삭제 · 3 차단`, `${f.display} — 1 invite (creates my room) · 2 remove · 3 block`), '1');
           if (c === '1') inviteSelectedFriend(); else if (c === '2') removeSelectedFriend();
+          else if (c === '3') blockSelectedFriend();
         } else if (i === game.invites.length + game.friends.length) promptAddFriend();
+        else if (i === game.invites.length + game.friends.length + 1) blocksOpen();
+      }
+      else if (game.screen === 'blocks') {
+        if (i < game.blocks.length) { game.blockSel = i; unblockSelectedUser(); }
+        else if (i === game.blocks.length) promptBlockUser();
       }
       else if (game.screen === 'matchMenu') {
         game.matchSel = i;
@@ -2037,6 +2455,7 @@ function updateChrome() {
   syncPageTheme();
 }
 updateChrome();
+loadStadiums();   // 경기장 테마 목록 (D102) — 오프라인이면 빈 목록
 
 // ═══ 프레임 루프 ═══
 // ═══ 친구 (D91) — main.swift Game 의 친구 부분 ═══
@@ -2049,7 +2468,7 @@ function applyFriends(r) {
   game.invites = (r.invites ?? []).filter((i) => typeof i.code === 'string').map((i) => ({ from: shortDisplay(String(i.from ?? '?'), 8), code: i.code }));
   if (game.friendSel >= friendRowCount()) game.friendSel = Math.max(0, friendRowCount() - 1);
 }
-const friendRowCount = () => game.invites.length + game.friends.length + 1;
+const friendRowCount = () => game.invites.length + game.friends.length + 2;
 function ackNotices() { game.notices = []; online.ackNotices(); }   // D98
 function friendsOpen() { game.screen = 'friends'; game.friendSel = 0; game.friendsStatus = ''; refreshFriends(); }
 function refreshFriends() {
@@ -2077,6 +2496,63 @@ async function removeSelectedFriend() {
   if (i < 0 || i >= game.friends.length) return;
   const r = await online.removeFriend(game.friends[i].id);
   applyFriends(r); game.friendsStatus = L('삭제했습니다', 'Removed');
+}
+function applyBlocks(r) {
+  if (!r) return false;
+  game.blocks = (r.blocks ?? []).filter((b) => b && typeof b.id === 'string')
+    .map((b) => ({ id: String(b.id), display: shortDisplay(String(b.display ?? '?'), 10) }));
+  if (game.blockSel >= blockRowCount()) game.blockSel = Math.max(0, blockRowCount() - 1);
+  return true;
+}
+const blockRowCount = () => game.blocks.length + 1;
+async function blocksOpen() {
+  game.screen = 'blocks'; game.blockSel = 0; game.blocksStatus = '';
+  await refreshBlocks();
+}
+async function refreshBlocks() {
+  if (!online.identityId) {
+    game.blocksStatus = L('서버 연결 필요 — 설정에서 온라인 참여를 켜세요', 'Server connection required — enable online play in Settings');
+    return;
+  }
+  const r = await online.fetchBlocks();
+  if (!applyBlocks(r)) game.blocksStatus = L('차단 목록을 불러오지 못했습니다', 'Could not load blocked users');
+}
+async function blockSelectedFriend() {
+  const i = game.friendSel - game.invites.length;
+  if (i < 0 || i >= game.friends.length) return;
+  const f = game.friends[i];
+  if (!window.confirm(L(`${f.display} 사용자를 차단할까요? 친구 관계가 끊기고 서로의 매칭·초대·도전에서 제외됩니다.`,
+                        `Block ${f.display}? This removes the friendship and excludes both users from matchmaking, invites, and challenges.`))) return;
+  game.friendsStatus = L('차단 중…', 'Blocking…');
+  const r = await online.blockUser({ userId: f.id });
+  if (!applyBlocks(r)) { game.friendsStatus = L('차단하지 못했습니다', 'Could not block user'); return; }
+  game.friendsStatus = L(`${f.display} 사용자를 차단했습니다`, `Blocked ${f.display}`);
+  refreshFriends();
+}
+async function blockDisplay(display) {
+  const d = (display ?? '').trim();
+  if (!/^.+#\d{4}$/.test(d)) { game.blocksStatus = L('닉네임#1234 형식으로 입력하세요', 'Enter as nickname#1234'); return; }
+  game.blocksStatus = L('차단 중…', 'Blocking…');
+  const r = await online.blockUser({ display: d });
+  if (!applyBlocks(r)) {
+    game.blocksStatus = L('사용자를 찾지 못했거나 차단하지 못했습니다', 'User not found or could not be blocked'); return;
+  }
+  game.blocksStatus = L('차단했습니다 — 이후 매칭·초대·도전에서 제외됩니다', 'Blocked — excluded from matchmaking, invites, and challenges');
+  refreshFriends();
+}
+async function unblockSelectedUser() {
+  if (game.blockSel < 0 || game.blockSel >= game.blocks.length) return;
+  const b = game.blocks[game.blockSel];
+  if (!window.confirm(L(`${b.display} 차단을 해제할까요?`, `Unblock ${b.display}?`))) return;
+  game.blocksStatus = L('차단 해제 중…', 'Unblocking…');
+  const r = await online.unblockUser(b.id);
+  if (!applyBlocks(r)) { game.blocksStatus = L('차단을 해제하지 못했습니다', 'Could not unblock user'); return; }
+  game.blocksStatus = L(`${b.display} 차단을 해제했습니다`, `Unblocked ${b.display}`);
+}
+function promptBlockUser() {
+  const v = window.prompt(L('차단할 닉네임#숫자를 정확히 입력하세요. 서로의 매칭·초대·도전에서 제외됩니다.',
+                            "Enter the exact nickname#tag. You will be excluded from each other's matches, invites, and challenges."), '');
+  if (v !== null) blockDisplay(v);
 }
 function inviteSelectedFriend() {   // 방을 만들고(호스트) 초대를 보낸 뒤 로비에서 기다린다
   const i = game.friendSel - game.invites.length;
@@ -2128,6 +2604,6 @@ function frame(t) {
 requestAnimationFrame(frame);
 
 // 디버그/자동화 훅 — 상태 점검용 (게임 조작은 입력 경로로만)
-window.__bb = { game, duel, online, pvp, startSession, startChallenge, persistRace, restoreRaceIfAny, ackNotices, friendsOpen, addFriend, inviteSelectedFriend, joinInvite, refreshFriends, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
+window.__bb = { game, duel, online, pvp, STADIUMS, startSession, startChallenge, persistRace, restoreRaceIfAny, ackNotices, friendsOpen, addFriend, inviteSelectedFriend, joinInvite, refreshFriends, startDuel, lbOpen, recordsOpen, draw, fitCanvas, tick, swing, enterRace,
                 get regions() { return regions; }, get scale() { return scale; },
                 get summary() { return game.session.summary(); } };

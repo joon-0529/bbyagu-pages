@@ -37,8 +37,8 @@ export function makePvp(game, duel, online, L, { shortDisplay, leaveToHome }) {
 
   p.createRoom = async () => {
     d.pvpStatus = L('방 만드는 중…', 'Creating room…');
-    d.isHost = true; d.ranked = false;
-    const r = await online.createRoom(d.matchInnings, d.duelLevel, d.physChaos);
+    d.isHost = true; d.ranked = false; d.pvpStadium = '';
+    const r = await online.createRoom(d.matchInnings, d.duelLevel, d.physChaos, d.activeStadiumId());   // 호스트 테마 (D102)
     if (!r?.code || !r.playerId) {
       d.pvpStatus = L('서버 연결 실패 — 설정에서 온라인 참여·서버 주소를 확인하세요', 'Server unreachable — check online play / server address in Settings');
       return;
@@ -74,6 +74,7 @@ export function makePvp(game, duel, online, L, { shortDisplay, leaveToHome }) {
     }
     d.duelLevel = s.level;
     d.physChaos = !!s.chaos;
+    d.pvpStadium = typeof s.stadium === 'string' ? s.stadium : '';   // 호스트 경기장 테마 (D102) — 모르는 id 면 기본
     d.oppNick = shortDisplay(String(r.hostNick ?? opp()), 8);
     resetRoomState();
     startPolling();
@@ -99,7 +100,7 @@ export function makePvp(game, duel, online, L, { shortDisplay, leaveToHome }) {
     // 끝난 경기의 종료 화면을 닫는 것은 탈주가 아니다 — leave 를 보내면 서버가
     // 몰수 처리해 방금 이긴 경기가 패로 뒤집힐 수 있다
     if (d.pvp && !d.dOver) online.sendRoomEvent(d.roomCode, d.playerId, 'leave');
-    d.pollActive = false; d.pvp = false; d.ranked = false;
+    d.pollActive = false; d.pvp = false; d.ranked = false; d.pvpStadium = '';
     d.rematchMine = false; d.rematchOpp = false;
     d.pendingEvents = []; d.pvpStatus = '';
     // 게스트·랭크전은 호스트/표준 규칙이 내 설정을 덮었으므로 저장값 복원
@@ -118,7 +119,7 @@ export function makePvp(game, duel, online, L, { shortDisplay, leaveToHome }) {
       return;
     }
     d.pvpStatus = L('매칭 등록 중…', 'Entering matchmaking…');
-    const r = await online.matchmake();
+    const r = await online.matchmake(d.activeStadiumId());   // 내가 호스트가 되면 내 테마 (D102)
     if (!r) { d.pvpStatus = L('서버 연결 실패', 'Server unreachable'); return; }
     if (r.matched === true) startRanked(r);                  // 대기자가 있었다 — 즉시 시작 (게스트)
     else if (r.ticket) {
@@ -140,6 +141,7 @@ export function makePvp(game, duel, online, L, { shortDisplay, leaveToHome }) {
     if (d.screen !== 'pvpLobby' && d.screen !== 'pvpMenu') { online.sendRoomEvent(r.code, r.playerId, 'leave'); return; }
     d.roomCode = r.code; d.playerId = r.playerId;
     d.isHost = r.isHost === true;
+    d.pvpStadium = d.isHost ? '' : (typeof r.stadium === 'string' ? r.stadium : '');   // 랭크전도 호스트 테마 (D102)
     d.oppNick = shortDisplay(String(r.oppNick ?? opp()), 8);
     d.oppW = Number.isInteger(r.oppW) ? r.oppW : 0;
     d.oppL = Number.isInteger(r.oppL) ? r.oppL : 0;
