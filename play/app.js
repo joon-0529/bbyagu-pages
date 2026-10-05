@@ -956,13 +956,23 @@ function draw(now) {
   const batX = W * 0.13;
   const hitX = batX + 34, hitY = g - 35;
   const pitX = W * 0.40;
-  const fieldEnd = W * 0.96;
+  // D120: 배경판이 전광판 때문에 담장을 왼쪽으로 당겼으면 거리 배율도 같이 (맥과 같다)
+  const fieldEnd = plate && plate.anchor > hitX + 40 ? hitX + (plate.anchor - 7 - hitX) * span / vcfg0.homerunLine : W * 0.96;
   // D78: 비거리 상한 없음 — 그림은 155m 까지만 (main.swift 와 동일)
   const x_of = (m) => hitX + (Math.min(m, span) / span) * (fieldEnd - hitX);
   const tickColor = ink(0.45);
   const inMenus = ['home', 'matchMenu', 'matchSetup', 'pvpMenu', 'pvpLobby', 'friends', 'blocks', 'settings'].includes(game.screen);
   const inShop = game.screen === 'shop';   // 상점은 필드를 그대로 그려 미리보기로 쓴다 (선수도 플레이 위치)
   if (plate && inMenus) {
+    // 그림 속 전광판 — 메뉴에서도 글씨를 (D121: 빈 흰 판이 어색했다, 맥과 같다). 반투명 판 아래로
+    const br = boardRect(theme, plate);
+    const inkB = theme.boardDark ? 'rgba(255,240,205,0.92)' : 'rgba(40,40,40,0.8)';
+    const promo = showPromo() ? online.promo() : null;
+    if (promo && promo.board.length) drawPromoBoard(br, promo.board[0], inkB);
+    else {
+      const t = online.adBoardRemote ?? L('별별야구', 'BB Baseball');
+      if (textW(t, mono(15, 700)) < br.w - 8) text(t, br.x + br.w / 2, br.y + br.h / 2 - 8, mono(15, 700), inkB, 'center');
+    }
     ctx.globalAlpha = 0.66;
     ctx.fillStyle = bg(); ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
   }
@@ -1022,8 +1032,11 @@ function draw(now) {
 
   // ── 지면 + 눈금 ──
   ctx.strokeStyle = ink(0.25); ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, g); ctx.lineTo(W, g); ctx.stroke();
+  // 배경판 위에선 지면선·눈금을 담장에서 끊는다 (D118, 맥과 같다). 기본 구장은 그대로
+  const lineEnd = plate ? x_of(vcfg0.homerunLine) : W;
+  ctx.beginPath(); ctx.moveTo(0, g); ctx.lineTo(lineEnd, g); ctx.stroke();
   for (const m of [50, 100, 150]) {
+    if (plate && m >= vcfg0.homerunLine) continue;
     const x = x_of(m);
     ctx.beginPath(); ctx.moveTo(x, g); ctx.lineTo(x, g + 5); ctx.stroke();
     text(`${m}m`, x - 8, g + 7, smallFont, tickColor);
@@ -1257,7 +1270,7 @@ function draw(now) {
   if (game.mode === 'race' && game.phase === 'ended') drawRaceOver(sum, now);
   if (game.mode === 'duel' && game.screen === 'match' && game.phase !== 'ended'
       && game.halfChangeAt > 0) {
-    drawHalfChangeCard(now - game.halfChangeAt);
+    drawHalfChangeCard(now - game.halfChangeAt, theme, plate);
   }
   if (game.mode === 'duel' && game.screen === 'match' && game.ranked && game.matchedAt > 0) drawMatched(now - game.matchedAt);
   if (game.mode === 'duel' && game.phase === 'ended') drawDuelOver(now);
@@ -1554,9 +1567,9 @@ function drawMenus(hudY, g, now) {
 // ═══ 경기 스코어보드 (main.swift drawDuelScoreboard) ═══
 function drawDuelScoreboard(hudY) {
   const oppName = game.pvp ? game.oppNick.slice(0, 3) : L('봇', 'Bot');
-  const cellW = 22, nameW = 34, left = 18;
-  const maxCells = Math.max(3, Math.floor((W * 0.46 - nameW - 34) / cellW));
-  const shown = Math.min(game.dInnT, maxCells);
+  const cellW = 22, left = 18;
+  const nameW = Math.max(34, Math.max(textW(L('나', 'Me'), hudFont), textW(oppName, hudFont)) + 18);   // D119: 긴 이름이 첫 칸에 겹쳤다
+  const shown = Math.min(game.dInnT, 3);   // 경기 중엔 최근 3이닝만 (D119, 맥과 같다). 전체는 종료 화면이
   const first = Math.max(0, Math.min(game.dInn, game.dInnT) - shown);
   const truncated = first > 0;
   const colX = (i) => left + nameW + i * cellW + cellW / 2;
@@ -1731,7 +1744,7 @@ function drawDuelOver(now) {
   const c = (str, y, font, color) => text(str, cx, y + rise, font, color, 'center');
   const verdictColor = iWon ? ORANGE() + `${appear})` : ink((oppWon ? 0.55 : 0.75) * appear);
   c(iWon ? 'YOU WIN' : oppWon ? 'YOU LOSE' : 'DRAW', Y(18), mono(26, 800), verdictColor);
-  c(L(`나 ${my}  :  ${bot} ${oppName}`, `Me ${my}  :  ${bot} ${oppName}`), Y(52), mono(34, 900), ink(0.95 * appear));
+  c(`${shortDisplay(online.nickname(), 6)} ${my}  :  ${bot} ${oppName}`, Y(52), mono(34, 900), ink(0.95 * appear));   // 맥과 같이 닉네임 (공유 이미지, D105)
   const scoreRow = (name, arr, total) => {
     const cells = [];
     for (let i = 0; i < game.dInnT; i++) {
@@ -1805,22 +1818,27 @@ function drawMatched(t) {
 }
 
 // 공수 교대 알림 (시안 C — 카드형)
-function drawHalfChangeCard(t) {
+function drawHalfChangeCard(t, theme = null, plate = null) {
   const dur = HALF_CHANGE_MS;
   if (t < 0 || t >= dur) return;
   const fade = Math.min(1, Math.min(t / 150, (dur - t) / 300));
   const card = { x: W / 2 - 150, y: H / 2 - 38, w: 300, h: 76 };
-  ctx.globalAlpha = 0.97 * fade;
-  ctx.fillStyle = bg();
-  roundedRect(card.x, card.y, card.w, card.h, 10); ctx.fill();
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = ORANGE() + `${0.9 * fade})`; ctx.lineWidth = 2;
-  roundedRect(card.x, card.y, card.w, card.h, 10); ctx.stroke();
+  if (plate) {   // 배경판 위: 유리판 (D118 — 검은 카드 + 주황 테두리가 배경과 따로 놀았다)
+    ctx.save(); ctx.globalAlpha = fade; drawGlass(card, 18, theme, plate); ctx.restore();
+  } else {
+    ctx.globalAlpha = 0.97 * fade;
+    ctx.fillStyle = bg();
+    roundedRect(card.x, card.y, card.w, card.h, 10); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = ORANGE() + `${0.9 * fade})`; ctx.lineWidth = 2;
+    roundedRect(card.x, card.y, card.w, card.h, 10); ctx.stroke();
+  }
   text(L('공수 교대', 'Switch sides'), W / 2, card.y + 12, mono(26, 900), ink(0.9 * fade), 'center');
   const next = duel.myBat()
     ? L('이제 내 공격 — Space 로 스윙', 'You bat now — Space to swing')
     : L('이제 내 수비 — 1~4 로 구종 선택', 'You pitch now — 1–4 to choose');
-  text(next, W / 2, card.y + 48, mono(11, 500), ORANGE() + `${fade})`, 'center');
+  const lightGlass = plate && theme && theme.tone !== 'dark';   // 수묵: 밝은 유리 위라 주황을 진하게
+  text(next, W / 2, card.y + 48, mono(11, 500), lightGlass ? `rgba(184,77,0,${fade})` : ORANGE() + `${fade})`, 'center');
 }
 
 // 맥 drawFireworks 포팅 — 좌우 가장자리 방사선 폭죽 (승리 컬러 / 패배 흑백)

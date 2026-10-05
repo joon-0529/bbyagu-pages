@@ -76,16 +76,13 @@ export function drawPlate(ctx, t, W, H, g, xOff = 0, anchorX = null) {   // xOff
   if (!im) return null;
   const pw = im.naturalWidth, ph = im.naturalHeight;
   let s = Math.max(W / pw, g / (t.horizon * ph)), dx;
+  let anchor = anchorX;
   if (anchorX !== null && t.wallEnd) {
     // D108: 그림 속 담장 끝을 게임 담장(홈런선 기둥)에 맞춘다 — 그림이 양쪽 화면 끝을 다 덮도록 배율을 키운다
-    const cover = Math.max(W / pw, anchorX / (t.wallEnd * pw), (W - anchorX) / ((1 - t.wallEnd) * pw));
-    s = Math.max(s, cover);
-    // D110: 4:3(아이패드)은 높이로 정한 배율이 커서 전광판 조건이 담장을 130px 밀어냈다 —
-    // 담장·전광판이 함께 맞는 배율까지 줄인다(가로는 계속 덮는다). 위에 남는 곳은 하늘을 잇는다 (skyStrip)
-    const sBoth = (W - 4 - anchorX) / ((t.board[2] - t.wallEnd) * pw);
-    if (sBoth < s) s = Math.max(sBoth, cover);
-    // 전광판이 통째로 화면 안에 — 담장 정렬보다 우선 (경기 모드 125m 는 몇 px 어긋난다)
-    dx = Math.min(anchorX - t.wallEnd * pw * s, W - 4 - t.board[2] * pw * s);
+    s = Math.max(s, anchorX / (t.wallEnd * pw), (W - anchorX) / ((1 - t.wallEnd) * pw));
+    // D120: 그림을 줄이지 않는다 (위가 비어 지어낸 하늘이 '블러'처럼 보였다). 전광판이 넘치면 게임 담장을 왼쪽으로 당긴다
+    anchor = Math.min(anchorX, W - 4 - (t.board[2] - t.wallEnd) * pw * s);
+    dx = anchor - t.wallEnd * pw * s;
   } else {
     dx = pw * s > W + 1 ? W - pw * s : (W - pw * s) / 2;
   }
@@ -111,7 +108,7 @@ export function drawPlate(ctx, t, W, H, g, xOff = 0, anchorX = null) {   // xOff
   }
   if (bottom < H) { ctx.fillStyle = groundColor(t.id, im); ctx.fillRect(dx, bottom - 1, pw * s, H - bottom + 1); }
   ctx.drawImage(im, dx, dy, pw * s, ph * s);
-  return { s, dx, dy, pw, ph, ext };
+  return { s, dx, dy, pw, ph, ext, anchor };
 }
 
 /// 그림 속 전광판(빈 판)의 캔버스 좌표 — 게임이 여기에 문구·후원 그림을 얹는다
